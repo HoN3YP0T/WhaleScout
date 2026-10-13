@@ -7,6 +7,15 @@ const envSchema = z.object({
   // FEED_PROVIDER=helius when this is unset rather than silently falling
   // back to the mock feed.
   HELIUS_API_KEY: z.string().optional().default(""),
+  // Any Solana JSON-RPC endpoint (another provider, a self-hosted node, or
+  // the public https://api.mainnet-beta.solana.com for testing). When set it
+  // is used INSTEAD of Helius by every RPC-backed component - the live
+  // feed, dexscreener+rpc, and solana-rpc relationships - and satisfies
+  // their "needs an endpoint" check in place of HELIUS_API_KEY. The
+  // WebSocket URL defaults to this URL with http(s) -> ws(s); set
+  // SOLANA_WS_URL when the provider serves it elsewhere.
+  SOLANA_RPC_URL: z.string().optional().default(""),
+  SOLANA_WS_URL: z.string().optional().default(""),
   // "dexscreener+rpc" is the recommended real-data option: it merges
   // DexScreener's liquidity/market cap with holder concentration and
   // mint/freeze authority state read from standard Solana RPC (via the
@@ -50,6 +59,39 @@ const envSchema = z.object({
 });
 
 export type AppEnv = z.infer<typeof envSchema>;
+
+export interface SolanaRpcEndpoint {
+  httpUrl: string;
+  wsUrl: string;
+  /** Safe to log - never contains an API key. */
+  label: string;
+}
+
+export function heliusEndpoint(apiKey: string): SolanaRpcEndpoint {
+  return {
+    httpUrl: `https://mainnet.helius-rpc.com/?api-key=${apiKey}`,
+    wsUrl: `wss://mainnet.helius-rpc.com/?api-key=${apiKey}`,
+    label: "helius",
+  };
+}
+
+/** SOLANA_RPC_URL when set, else Helius when HELIUS_API_KEY is set, else
+ * undefined (callers that need RPC must refuse to start). */
+export function resolveSolanaRpcEndpoint(
+  env: Pick<AppEnv, "SOLANA_RPC_URL" | "SOLANA_WS_URL" | "HELIUS_API_KEY">,
+): SolanaRpcEndpoint | undefined {
+  if (env.SOLANA_RPC_URL) {
+    const url = new URL(env.SOLANA_RPC_URL);
+    return {
+      httpUrl: env.SOLANA_RPC_URL,
+      wsUrl: env.SOLANA_WS_URL || env.SOLANA_RPC_URL.replace(/^http/, "ws"),
+      // Host only: providers often embed keys in the path or query string.
+      label: url.host,
+    };
+  }
+  if (env.HELIUS_API_KEY) return heliusEndpoint(env.HELIUS_API_KEY);
+  return undefined;
+}
 
 /**
  * Loads a `.env` file into `process.env`, if one exists.

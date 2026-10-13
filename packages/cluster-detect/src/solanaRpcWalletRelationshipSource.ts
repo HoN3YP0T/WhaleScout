@@ -1,5 +1,6 @@
 import { Connection, PublicKey } from "@solana/web3.js";
 import {
+  heliusEndpoint,
   RpcRefreshGovernor,
   resolveRpcRefreshBudget,
   type ClusterEdge,
@@ -108,11 +109,15 @@ const DEFAULT_MAX_SIGNATURE_PAGES = 4;
  * rather than a funding transfer. */
 const MIN_FUNDING_LAMPORTS = 1_000_000;
 
+const MAX_SUPPORTED_TRANSACTION_VERSION = 1;
+
 const COMMON_FUNDER_WEIGHT = 0.9;
 const SHARED_CREATOR_WEIGHT = 1;
 
 function defaultRpcFactory(httpUrl: string): SolanaHistoryRpcLike {
-  return new Web3SolanaHistoryRpcClient(new Connection(httpUrl, { commitment: "confirmed" }));
+  // No built-in 429 retry - the shared governor's cooldown is the retry
+  // policy (see solanaRpcTokenMetadataProvider.ts's defaultRpcFactory).
+  return new Web3SolanaHistoryRpcClient(new Connection(httpUrl, { commitment: "confirmed", disableRetryOnRateLimit: true }));
 }
 
 /** Thin `SolanaHistoryRpcLike` adapter over `@solana/web3.js`'s
@@ -130,8 +135,13 @@ export class Web3SolanaHistoryRpcClient implements SolanaHistoryRpcLike {
 
   async getTransaction(signature: string): Promise<TransactionLike | undefined> {
     // maxSupportedTransactionVersion is required or versioned transactions
-    // come back as an error rather than as data.
-    const tx = await this.connection.getParsedTransaction(signature, { maxSupportedTransactionVersion: 0 });
+    // come back as an error rather than as data - and mainnet now carries
+    // v1 transactions, which a cap of 0 rejects outright (seen live). Only
+    // jsonParsed output is read here, so the node does the message parsing
+    // and this client needs no knowledge of the v1 format.
+    const tx = await this.connection.getParsedTransaction(signature, {
+      maxSupportedTransactionVersion: MAX_SUPPORTED_TRANSACTION_VERSION as 0,
+    });
     if (!tx?.meta) return undefined;
     return {
       accountKeys: tx.transaction.message.accountKeys.map((k) => k.pubkey.toBase58()),
@@ -178,6 +188,9 @@ export interface SolanaRpcWalletRelationshipSourceOptions {
    * fail-fast, same contract as `HeliusFeedProvider` and
    * `CompositeTokenMetadataProvider`). */
   apiKey: string;
+  /** Use this RPC endpoint instead of Helius (SOLANA_RPC_URL). When set,
+   * `apiKey` may be empty. */
+  rpcUrl?: string;
   /** DI seam for tests: skips opening a real connection to Helius. */
   rpcFactory?: (httpUrl: string) => SolanaHistoryRpcLike;
   /** Pass the governor shared with `CompositeTokenMetadataProvider` so the
@@ -233,14 +246,14 @@ export class SolanaRpcWalletRelationshipSource implements WalletRelationshipSour
   private readonly deployers = new Map<string, string | null>();
 
   constructor(options: SolanaRpcWalletRelationshipSourceOptions) {
-    if (!options.apiKey) {
+    if (!options.apiKey && !options.rpcUrl) {
       // Defense in depth - wiring.ts already refuses to select this source
       // without a key, but the class must never silently proceed
       // unauthenticated if constructed some other way.
-      throw new Error("SolanaRpcWalletRelationshipSource requires a non-empty apiKey (HELIUS_API_KEY)");
+      throw new Error("SolanaRpcWalletRelationshipSource requires a non-empty apiKey (HELIUS_API_KEY) or an rpcUrl (SOLANA_RPC_URL)");
     }
     const rpcFactory = options.rpcFactory ?? defaultRpcFactory;
-    this.rpc = rpcFactory(`https://mainnet.helius-rpc.com/?api-key=${options.apiKey}`);
+    this.rpc = rpcFactory(options.rpcUrl ?? heliusEndpoint(options.apiKey).httpUrl);
     this.governor =
       options.refreshGovernor ??
       new RpcRefreshGovernor(resolveRpcRefreshBudget(options.refreshBudget), options.now ?? Date.now);

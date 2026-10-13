@@ -11,6 +11,8 @@ function env(overrides: Partial<Record<string, any>> = {}) {
     DATABASE_URL: "",
     FEED_PROVIDER: "mock" as const,
     HELIUS_API_KEY: "",
+    SOLANA_RPC_URL: "",
+    SOLANA_WS_URL: "",
     TOKEN_DATA_PROVIDER: "mock" as const,
     SOLSCAN_API_KEY: "",
     WALLET_RELATIONSHIP_SOURCE: "mock" as const,

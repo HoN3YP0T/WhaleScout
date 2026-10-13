@@ -94,7 +94,7 @@ describe("HeliusFeedProvider", () => {
 
   it("does not emit a trade event for logs with no decodable TradeEvent", async () => {
     const fake = new FakeConnection();
-    const provider = new HeliusFeedProvider({ apiKey: "test-key", connectionFactory: () => fake });
+    const provider = new HeliusFeedProvider({ apiKey: "test-key", solUsdPrice: 100, connectionFactory: () => fake });
     const received: NormalizedTradeEvent[] = [];
     provider.onEvent((e) => received.push(e));
 
@@ -107,7 +107,7 @@ describe("HeliusFeedProvider", () => {
 
   it("routes decode failures to error handlers, not event handlers", async () => {
     const fake = new FakeConnection();
-    const provider = new HeliusFeedProvider({ apiKey: "test-key", connectionFactory: () => fake });
+    const provider = new HeliusFeedProvider({ apiKey: "test-key", solUsdPrice: 100, connectionFactory: () => fake });
     const events: NormalizedTradeEvent[] = [];
     const errors: Error[] = [];
     provider.onEvent((e) => events.push(e));
@@ -132,7 +132,7 @@ describe("HeliusFeedProvider", () => {
       },
       removeOnLogsListener: (id) => fake.removeOnLogsListener(id),
     };
-    const provider = new HeliusFeedProvider({ apiKey: "test-key", connectionFactory: () => captured });
+    const provider = new HeliusFeedProvider({ apiKey: "test-key", solUsdPrice: 100, connectionFactory: () => captured });
     await provider.connect();
     expect(String(seenFilter)).toBe(PUMP_FUN_PROGRAM_ID);
   });

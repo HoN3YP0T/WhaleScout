@@ -12,7 +12,7 @@
  *   HELIUS_API_KEY=... npx tsx scripts/verify-feed.ts --seconds 60
  */
 
-import { loadEnvFile } from "@whale-sniper/core";
+import { loadEnvFile, resolveSolanaRpcEndpoint } from "@whale-sniper/core";
 import { Connection, PublicKey } from "@solana/web3.js";
 import {
   decodePumpFunTradeLog,
@@ -28,21 +28,25 @@ function arg(flag: string, fallback: number): number {
 }
 
 loadEnvFile();
-const apiKey = process.env.HELIUS_API_KEY ?? "";
+const endpoint = resolveSolanaRpcEndpoint({
+  SOLANA_RPC_URL: process.env.SOLANA_RPC_URL ?? "",
+  SOLANA_WS_URL: process.env.SOLANA_WS_URL ?? "",
+  HELIUS_API_KEY: process.env.HELIUS_API_KEY ?? "",
+});
 const seconds = arg("--seconds", 30);
 const sampleLimit = arg("--samples", 3);
 /* Only affects the USD figure printed in samples, not whether decoding works. */
 const SOL_USD_PRICE = arg("--sol-price", 150);
 
-if (!apiKey) {
-  console.error("HELIUS_API_KEY is not set (checked .env and the environment).\n");
+if (!endpoint) {
+  console.error("Neither HELIUS_API_KEY nor SOLANA_RPC_URL is set (checked .env and the environment).\n");
   console.error("  Put HELIUS_API_KEY=your-key in .env, or:");
-  console.error("  HELIUS_API_KEY=your-key npm run verify:feed");
+  console.error("  SOLANA_RPC_URL=https://api.mainnet-beta.solana.com npm run verify:feed");
   process.exit(1);
 }
 
-const httpUrl = `https://mainnet.helius-rpc.com/?api-key=${apiKey}`;
-const wsUrl = `wss://mainnet.helius-rpc.com/?api-key=${apiKey}`;
+const httpUrl = endpoint.httpUrl;
+const wsUrl = endpoint.wsUrl;
 
 const stats = {
   notifications: 0,
@@ -56,7 +60,7 @@ const samples: string[] = [];
 const failedSamples: string[] = [];
 
 async function main(): Promise<void> {
-  console.log(`Connecting to Helius, watching pump.fun (${PUMP_FUN_PROGRAM_ID}) for ${seconds}s...\n`);
+  console.log(`Connecting to ${endpoint!.label}, watching pump.fun (${PUMP_FUN_PROGRAM_ID}) for ${seconds}s...\n`);
 
   const connection = new Connection(httpUrl, { commitment: "confirmed", wsEndpoint: wsUrl });
 

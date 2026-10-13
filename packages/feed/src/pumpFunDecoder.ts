@@ -121,19 +121,24 @@ function decodeTradeEventBuffer(buf: Buffer): PumpFunTradeEvent | null {
  * recognizable trade event - a failed tx, an unrelated instruction on the
  * same program, or a log shape this decoder doesn't understand. */
 export function decodePumpFunTradeLog(notification: PumpFunLogsNotification): PumpFunTradeEvent | null {
-  if (notification.err) return null;
+  return decodePumpFunTradeLogs(notification)[0] ?? null;
+}
+
+/** Every trade event in one transaction's logs, in log order. A single
+ * transaction can buy/sell several times (bundlers, multi-hop routers);
+ * taking only the first undercounts that wallet's volume. */
+export function decodePumpFunTradeLogs(notification: PumpFunLogsNotification): PumpFunTradeEvent[] {
+  if (notification.err) return [];
+  const trades: PumpFunTradeEvent[] = [];
   for (const payload of extractProgramDataPayloads(notification.logs)) {
     const decoded = decodeTradeEventBuffer(payload);
-    if (decoded) return decoded;
+    if (decoded) trades.push(decoded);
   }
-  return null;
+  return trades;
 }
 
 export interface PumpFunToNormalizedOptions {
-  /** Static SOL/USD conversion used because this build has no live price
-   * feed wired in (DexScreener's adapter covers token stats, not a SOL
-   * price oracle). A real deployment should replace this with a live
-   * SOL/USD source - default is a reasonable-as-of-writing fallback. */
+  /** SOL/USD at the time of the trade - see `SolUsdPriceSource`. */
   solUsdPrice: number;
   slot: number;
   txSignature: string;
@@ -153,6 +158,11 @@ export function pumpFunTradeToNormalizedEvent(
   const tokenAmount = Number(trade.tokenAmountRaw) / PUMP_TOKEN_UNITS;
   const usdValue = solAmount * options.solUsdPrice;
   const priceUsd = tokenAmount > 0 ? usdValue / tokenAmount : 0;
+  // The curve's real SOL reserves after this trade are the SOL a seller can
+  // actually exit into. Valued two-sided, the usual AMM liquidity
+  // convention. DexScreener reports no liquidity at all for bonding-curve
+  // pairs, so without this every pump.fun token reads as $0 liquidity.
+  const poolLiquidityUsd = 2 * (Number(trade.realSolReserves) / LAMPORTS_PER_SOL) * options.solUsdPrice;
 
   const payload: DecodableTradePayload = {
     wallet: trade.user,
@@ -183,6 +193,7 @@ export function pumpFunTradeToNormalizedEvent(
     slot: options.slot,
     blockTime: trade.timestamp,
     txSignature: options.txSignature,
+    poolLiquidityUsd,
     timestamps: {
       rawReceivedAt: options.receivedAt,
       decodedAt: nowFn(),

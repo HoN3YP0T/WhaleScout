@@ -7,7 +7,7 @@ import type {
   TokenStats,
 } from "@whale-sniper/core";
 import type { ITokenRepository } from "@whale-sniper/db";
-import type { ITokenMetadataProvider } from "./tokenMetadataProvider.js";
+import type { ITokenMetadataProvider, TokenMetadataSeed } from "./tokenMetadataProvider.js";
 
 interface WindowedTrade {
   blockTime: number;
@@ -21,6 +21,10 @@ interface TokenAccumulator {
   trades: WindowedTrade[]; // pruned to the last hour on every update
   peakLiquidityUsd: number;
   lastBlockTime: number;
+  /** Latest liquidity reported on-chain by a trade on this token (see
+   * NormalizedTradeEvent.poolLiquidityUsd), from the newest-blockTime trade. */
+  observedLiquidityUsd?: number;
+  observedLiquidityBlockTime?: number;
 }
 
 const ONE_HOUR = 3600;
@@ -77,16 +81,31 @@ export class TokenStatsCollector {
     acc.trades.push({ blockTime: event.blockTime, side: event.side, usdValue: event.usdValue, wallet: event.wallet });
     acc.trades = acc.trades.filter((t) => t.blockTime >= event.blockTime - ONE_HOUR);
     acc.lastBlockTime = Math.max(acc.lastBlockTime, event.blockTime);
+    if (
+      event.poolLiquidityUsd !== undefined &&
+      Number.isFinite(event.poolLiquidityUsd) &&
+      event.blockTime >= (acc.observedLiquidityBlockTime ?? Number.NEGATIVE_INFINITY)
+    ) {
+      acc.observedLiquidityUsd = event.poolLiquidityUsd;
+      acc.observedLiquidityBlockTime = event.blockTime;
+    }
 
-    const meta = this.metadata.get(event.tokenMint);
-    acc.peakLiquidityUsd = Math.max(acc.peakLiquidityUsd, meta.liquidityUsd);
-    if (acc.peakLiquidityUsd > 0 && meta.liquidityUsd / acc.peakLiquidityUsd < RUG_LIQUIDITY_DROP_RATIO) {
+    const liquidityUsd = this.liquidityOf(acc, this.metadata.get(event.tokenMint));
+    acc.peakLiquidityUsd = Math.max(acc.peakLiquidityUsd, liquidityUsd);
+    if (acc.peakLiquidityUsd > 0 && liquidityUsd / acc.peakLiquidityUsd < RUG_LIQUIDITY_DROP_RATIO) {
       this.ruggedRegistry.flag(event.tokenMint);
     }
 
     const stats = this.buildStats(acc, event.blockTime);
     await this.repo.upsertStats(stats);
     this.bus.emit("token.stats-updated", { tokenMint: event.tokenMint });
+  }
+
+  /** On-chain liquidity from the trade stream wins over the metadata
+   * provider's: it is per-trade fresh, and for bonding-curve tokens the
+   * provider (DexScreener) has none at all. */
+  private liquidityOf(acc: TokenAccumulator, meta: TokenMetadataSeed): number {
+    return acc.observedLiquidityUsd ?? meta.liquidityUsd;
   }
 
   private buildStats(acc: TokenAccumulator, asOfBlockTime: number): TokenStats {
@@ -107,7 +126,7 @@ export class TokenStatsCollector {
     return {
       tokenMint: acc.tokenMint,
       createdAt: firstSeen,
-      liquidityUsd: meta.liquidityUsd,
+      liquidityUsd: this.liquidityOf(acc, meta),
       marketCapUsd: meta.marketCapUsd,
       holderCount: meta.holderCount,
       top10HolderPct: meta.top10HolderPct,

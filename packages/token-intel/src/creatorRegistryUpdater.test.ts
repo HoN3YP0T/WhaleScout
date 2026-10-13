@@ -143,3 +143,54 @@ describe("TokenStatsCollector -> CreatorRegistryUpdater", () => {
     expect(creatorRegistry.getReputation("C1")?.tokensCreated).toBe(1);
   });
 });
+
+describe("TokenStatsCollector liquidity", () => {
+  const trade = (blockTime: number, poolLiquidityUsd?: number) => ({
+    id: `e${blockTime}`,
+    wallet: "W",
+    tokenMint: "T1",
+    side: "BUY" as const,
+    tokenAmount: 100,
+    usdValue: 100,
+    priceUsd: 1,
+    dex: "pumpfun" as const,
+    pool: "P",
+    slot: blockTime,
+    blockTime,
+    txSignature: `tx${blockTime}`,
+    poolLiquidityUsd,
+    timestamps: { rawReceivedAt: 0 },
+  });
+
+  it("uses on-chain pool liquidity from trades when the metadata provider has none (pump.fun on DexScreener)", async () => {
+    const bus = new EventBus();
+    const provider: ITokenMetadataProvider = { get: () => conservativeUnknownSeed() }; // liquidityUsd 0
+    const collector = new TokenStatsCollector(bus, new InMemoryTokenRepository(), provider, new TokenFirstSeenIndex(), new RuggedTokenRegistry(), new SimulatedClock(0));
+    collector.start();
+
+    bus.emit("trade.normalized", trade(1000, 6000));
+    expect(collector.getStats("T1")?.liquidityUsd).toBe(6000);
+
+    // An out-of-order (older) trade must not overwrite the newer reading.
+    bus.emit("trade.normalized", trade(990, 1000));
+    expect(collector.getStats("T1")?.liquidityUsd).toBe(6000);
+
+    // A trade without reserves leaves the last on-chain reading in place.
+    bus.emit("trade.normalized", trade(1001));
+    expect(collector.getStats("T1")?.liquidityUsd).toBe(6000);
+    await flush();
+  });
+
+  it("flags a rug when on-chain liquidity collapses", async () => {
+    const bus = new EventBus();
+    const rugged = new RuggedTokenRegistry();
+    const provider: ITokenMetadataProvider = { get: () => conservativeUnknownSeed() };
+    new TokenStatsCollector(bus, new InMemoryTokenRepository(), provider, new TokenFirstSeenIndex(), rugged, new SimulatedClock(0)).start();
+
+    bus.emit("trade.normalized", trade(1000, 10_000));
+    expect(rugged.isRugged("T1")).toBe(false);
+    bus.emit("trade.normalized", trade(1001, 3_000));
+    expect(rugged.isRugged("T1")).toBe(true);
+    await flush();
+  });
+});

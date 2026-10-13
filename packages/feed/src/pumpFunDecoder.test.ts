@@ -3,6 +3,7 @@ import bs58 from "bs58";
 import { describe, expect, it } from "vitest";
 import {
   decodePumpFunTradeLog,
+  decodePumpFunTradeLogs,
   pumpFunTradeToNormalizedEvent,
   type PumpFunLogsNotification,
 } from "./pumpFunDecoder.js";
@@ -147,6 +148,15 @@ describe("decodePumpFunTradeLog", () => {
     expect(decodePumpFunTradeLog(notification)).toBeNull();
   });
 
+  it("returns every trade in a transaction that trades more than once", () => {
+    const buy = fixtureNotification({ isBuy: true });
+    const sell = fixtureNotification({ isBuy: false, solAmountLamports: 1_000_000_000n });
+    const notification = { ...buy, logs: [...buy.logs, ...sell.logs] };
+    const trades = decodePumpFunTradeLogs(notification);
+    expect(trades.map((t) => t.isBuy)).toEqual([true, false]);
+    expect(decodePumpFunTradeLog(notification)?.isBuy).toBe(true);
+  });
+
   it("ignores unrelated Program data lines and finds the real one among several", () => {
     const notification = fixtureNotification();
     notification.logs = [
@@ -185,5 +195,12 @@ describe("pumpFunTradeToNormalizedEvent", () => {
     expect(normalized.blockTime).toBe(1_700_000_500);
     expect(normalized.timestamps.rawReceivedAt).toBe(1_700_000_500_123);
     expect(normalized.timestamps.decodedAt).toBe(1_700_000_500_456);
+  });
+
+  it("reports the bonding curve's real SOL reserves as two-sided USD pool liquidity", () => {
+    // Fixture: realSolReserves = 10 SOL.
+    const decoded = decodePumpFunTradeLog(fixtureNotification())!;
+    const normalized = pumpFunTradeToNormalizedEvent(decoded, { solUsdPrice: 100, slot: 1, txSignature: "s", receivedAt: 0 });
+    expect(normalized.poolLiquidityUsd).toBeCloseTo(2 * 10 * 100, 6);
   });
 });

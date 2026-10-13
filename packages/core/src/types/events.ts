@@ -54,6 +54,11 @@ export interface NormalizedTradeEvent {
   slot: number;
   blockTime: number;
   txSignature: string;
+  /** Pool liquidity (USD, both sides) as reported on-chain by this trade
+   * itself, when the venue emits reserves (pump.fun's bonding curve does).
+   * Fresher than any metadata API, and the only liquidity figure that
+   * exists for bonding-curve tokens. Undefined when the feed can't tell. */
+  poolLiquidityUsd?: number;
   timestamps: EventTimestamps;
 }
 

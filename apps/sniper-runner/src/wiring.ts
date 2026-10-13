@@ -7,6 +7,8 @@ import {
   createLogger,
   loadEnv,
   parseStrategyConfig,
+  resolveSolanaRpcEndpoint,
+  type SolanaRpcEndpoint,
   type AppEnv,
   type IFeedProvider,
   type Logger,
@@ -61,14 +63,14 @@ function loadStrategyConfig(): StrategyConfig {
  * HELIUS_API_KEY is unset, so a misconfigured deploy fails loudly at boot
  * instead of quietly running against mock data while believing it's live.
  */
-function buildFeedProvider(env: AppEnv, scenarios: ScenarioResult[]): IFeedProvider {
+function buildFeedProvider(env: AppEnv, rpc: SolanaRpcEndpoint | undefined, scenarios: ScenarioResult[]): IFeedProvider {
   if (env.FEED_PROVIDER === "helius") {
-    if (!env.HELIUS_API_KEY) {
+    if (!rpc) {
       throw new Error(
-        'FEED_PROVIDER=helius requires HELIUS_API_KEY to be set - refusing to start rather than silently falling back to the mock feed. Set HELIUS_API_KEY in .env, or set FEED_PROVIDER=mock.',
+        'FEED_PROVIDER=helius requires HELIUS_API_KEY (or SOLANA_RPC_URL) to be set - refusing to start rather than silently falling back to the mock feed. Set one in .env, or set FEED_PROVIDER=mock.',
       );
     }
-    return new HeliusFeedProvider({ apiKey: env.HELIUS_API_KEY });
+    return new HeliusFeedProvider({ apiKey: env.HELIUS_API_KEY, rpcUrl: rpc.httpUrl, wsUrl: rpc.wsUrl });
   }
   return new MockFeedProvider(
     scenarios.flatMap((s) => s.events),
@@ -87,7 +89,11 @@ function buildFeedProvider(env: AppEnv, scenarios: ScenarioResult[]): IFeedProvi
  * MockTokenMetadataProvider (with the mock scenarios' deterministic
  * overrides) in that case, exactly as it always has.
  */
-function buildTokenMetadataProvider(env: AppEnv, governor: RpcRefreshGovernor): ITokenMetadataProvider | undefined {
+function buildTokenMetadataProvider(
+  env: AppEnv,
+  rpc: SolanaRpcEndpoint | undefined,
+  governor: RpcRefreshGovernor,
+): ITokenMetadataProvider | undefined {
   if (env.TOKEN_DATA_PROVIDER === "solscan") {
     if (!env.SOLSCAN_API_KEY) {
       throw new Error(
@@ -97,12 +103,12 @@ function buildTokenMetadataProvider(env: AppEnv, governor: RpcRefreshGovernor): 
     return new SolscanTokenMetadataProvider(env.SOLSCAN_API_KEY);
   }
   if (env.TOKEN_DATA_PROVIDER === "dexscreener+rpc") {
-    if (!env.HELIUS_API_KEY) {
+    if (!rpc) {
       throw new Error(
-        'TOKEN_DATA_PROVIDER=dexscreener+rpc requires HELIUS_API_KEY to be set - it reads holder concentration and mint/freeze authority state over Solana RPC, and refuses to start rather than silently falling back to the conservative "unknown = risky" defaults that impose a 35-point token-risk floor. Set HELIUS_API_KEY in .env, or set TOKEN_DATA_PROVIDER=mock, dexscreener or solscan.',
+        'TOKEN_DATA_PROVIDER=dexscreener+rpc requires HELIUS_API_KEY (or SOLANA_RPC_URL) to be set - it reads holder concentration and mint/freeze authority state over Solana RPC, and refuses to start rather than silently falling back to the conservative "unknown = risky" defaults that impose a 35-point token-risk floor. Set HELIUS_API_KEY in .env, or set TOKEN_DATA_PROVIDER=mock, dexscreener or solscan.',
       );
     }
-    return new CompositeTokenMetadataProvider({ apiKey: env.HELIUS_API_KEY, refreshGovernor: governor });
+    return new CompositeTokenMetadataProvider({ apiKey: env.HELIUS_API_KEY, rpcUrl: rpc.httpUrl, refreshGovernor: governor });
   }
   if (env.TOKEN_DATA_PROVIDER === "dexscreener") {
     return new DexScreenerTokenMetadataProvider();
@@ -124,14 +130,18 @@ function buildTokenMetadataProvider(env: AppEnv, governor: RpcRefreshGovernor): 
  * Returns undefined for "mock" so buildOrchestrator() falls back to the
  * mock exactly as it always has.
  */
-function buildWalletRelationshipSource(env: AppEnv, governor: RpcRefreshGovernor): WalletRelationshipSource | undefined {
+function buildWalletRelationshipSource(
+  env: AppEnv,
+  rpc: SolanaRpcEndpoint | undefined,
+  governor: RpcRefreshGovernor,
+): WalletRelationshipSource | undefined {
   if (env.WALLET_RELATIONSHIP_SOURCE === "solana-rpc") {
-    if (!env.HELIUS_API_KEY) {
+    if (!rpc) {
       throw new Error(
-        'WALLET_RELATIONSHIP_SOURCE=solana-rpc requires HELIUS_API_KEY to be set - it derives wallet funding and token-deployer relationships from on-chain history, and refuses to start rather than silently falling back to MockWalletRelationshipSource, whose common-funder and shared-creator edge detectors return nothing in production. Set HELIUS_API_KEY in .env, or set WALLET_RELATIONSHIP_SOURCE=mock.',
+        'WALLET_RELATIONSHIP_SOURCE=solana-rpc requires HELIUS_API_KEY (or SOLANA_RPC_URL) to be set - it derives wallet funding and token-deployer relationships from on-chain history, and refuses to start rather than silently falling back to MockWalletRelationshipSource, whose common-funder and shared-creator edge detectors return nothing in production. Set HELIUS_API_KEY in .env, or set WALLET_RELATIONSHIP_SOURCE=mock.',
       );
     }
-    return new SolanaRpcWalletRelationshipSource({ apiKey: env.HELIUS_API_KEY, refreshGovernor: governor });
+    return new SolanaRpcWalletRelationshipSource({ apiKey: env.HELIUS_API_KEY, rpcUrl: rpc.httpUrl, refreshGovernor: governor });
   }
   return undefined;
 }
@@ -167,8 +177,9 @@ export async function buildAppContext(): Promise<AppContext> {
   // so the operator's rate limit has to be spent once between them rather
   // than twice over.
   const rpcRefreshGovernor = new RpcRefreshGovernor();
-  const tokenMetadataProvider = buildTokenMetadataProvider(env, rpcRefreshGovernor);
-  const relationshipSource = buildWalletRelationshipSource(env, rpcRefreshGovernor);
+  const rpcEndpoint = resolveSolanaRpcEndpoint(env);
+  const tokenMetadataProvider = buildTokenMetadataProvider(env, rpcEndpoint, rpcRefreshGovernor);
+  const relationshipSource = buildWalletRelationshipSource(env, rpcEndpoint, rpcRefreshGovernor);
 
   const built = buildOrchestrator({
     bus,
@@ -189,7 +200,7 @@ export async function buildAppContext(): Promise<AppContext> {
   const creatorReputations = await repos.creatorReputation.loadAll();
   built.creatorRegistry.hydrate(creatorReputations);
 
-  const feedProvider = buildFeedProvider(env, scenarios);
+  const feedProvider = buildFeedProvider(env, rpcEndpoint, scenarios);
   const feedManager = new FeedManager(feedProvider, bus, logger);
 
   const telegramBot = new TelegramBot({
@@ -251,12 +262,39 @@ export async function startApp(ctx: AppContext): Promise<{ stop: () => Promise<v
   }
 
   const alertInterval = setInterval(() => {
+    // Feed counters live on the provider; MetricsStore only hears the
+    // connect/disconnect events, so without this /metrics and the
+    // dashboard show 0 events received however busy the feed is.
+    ctx.metrics.recordFeedHealth(ctx.feedManager.health());
     ctx.alertManager.check(ctx.metrics.snapshot());
   }, 10_000);
+
+  // Heartbeat: a live feed otherwise runs silently unless a watched wallet
+  // trades, which is indistinguishable from a dead feed in the logs.
+  let lastEvents = 0;
+  const heartbeatInterval = setInterval(() => {
+    const feed = ctx.feedManager.health();
+    const snapshot = ctx.metrics.snapshot();
+    ctx.logger.info(
+      {
+        feedConnected: feed.connected,
+        eventsLastMinute: feed.eventsReceived - lastEvents,
+        eventsTotal: feed.eventsReceived,
+        feedErrors: feed.errorsReceived,
+        signalsGenerated: snapshot.signalsGenerated,
+        signalsRejected: snapshot.signalsRejected,
+        openPositions: snapshot.openPositions,
+        realizedPnlUsd: Number(snapshot.realizedPnlUsd.toFixed(2)),
+      },
+      "heartbeat",
+    );
+    lastEvents = feed.eventsReceived;
+  }, 60_000);
 
   return {
     stop: async () => {
       clearInterval(alertInterval);
+      clearInterval(heartbeatInterval);
       await ctx.feedManager.stop();
       await ctx.telegramBot.stop();
       ctx.orchestrator.stop();

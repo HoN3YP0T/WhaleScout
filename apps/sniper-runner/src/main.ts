@@ -1,4 +1,4 @@
-import { loadEnvFile } from "@whale-sniper/core";
+import { loadEnvFile, resolveSolanaRpcEndpoint } from "@whale-sniper/core";
 import { buildAppContext, startApp } from "./wiring.js";
 
 // Before anything reads process.env - otherwise a configured .env is inert.
@@ -10,6 +10,7 @@ async function main(): Promise<void> {
     {
       envFile: envFileLoaded ? "loaded .env" : "no .env found - using defaults",
       feedProvider: ctx.env.FEED_PROVIDER,
+      solanaRpc: resolveSolanaRpcEndpoint(ctx.env)?.label ?? "none",
       tokenDataProvider: ctx.env.TOKEN_DATA_PROVIDER,
       walletRelationshipSource: ctx.env.WALLET_RELATIONSHIP_SOURCE,
       liveTradingEnabled: ctx.env.LIVE_TRADING_ENABLED,

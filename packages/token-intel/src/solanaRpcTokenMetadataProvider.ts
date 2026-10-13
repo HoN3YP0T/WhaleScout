@@ -1,5 +1,5 @@
 import { Connection, PublicKey } from "@solana/web3.js";
-import { RpcRefreshGovernor, resolveRpcRefreshBudget, type RpcRefreshBudget } from "@whale-sniper/core";
+import { heliusEndpoint, RpcRefreshGovernor, resolveRpcRefreshBudget, type RpcRefreshBudget } from "@whale-sniper/core";
 import { DexScreenerTokenMetadataProvider } from "./dexScreenerTokenMetadataProvider.js";
 import { conservativeUnknownSeed, type ITokenMetadataProvider, type TokenMetadataSeed } from "./tokenMetadataProvider.js";
 
@@ -102,7 +102,10 @@ export interface RpcTokenFacts {
 }
 
 function defaultRpcFactory(httpUrl: string): SolanaRpcLike {
-  return new Web3SolanaRpcClient(new Connection(httpUrl, { commitment: "confirmed" }));
+  // No built-in 429 retry: these are background refreshes, and the shared
+  // RpcRefreshGovernor's per-key cooldown is the retry policy. web3.js's own
+  // retry would hold a governor slot through its backoff and log every 429.
+  return new Web3SolanaRpcClient(new Connection(httpUrl, { commitment: "confirmed", disableRetryOnRateLimit: true }));
 }
 
 /** Thin `SolanaRpcLike` adapter over `@solana/web3.js`'s `Connection` -
@@ -188,6 +191,9 @@ export interface CompositeTokenMetadataProviderOptions {
    * HELIUS_API_KEY is unset, and the constructor refuses too (two-layer
    * fail-fast, same contract as `HeliusFeedProvider`). */
   apiKey: string;
+  /** Use this RPC endpoint instead of Helius (SOLANA_RPC_URL). When set,
+   * `apiKey` may be empty. */
+  rpcUrl?: string;
   /** DI seam for tests: skips opening a real connection to Helius. Defaults
    * to a `Web3SolanaRpcClient` over Helius's standard RPC endpoint. */
   rpcFactory?: (httpUrl: string) => SolanaRpcLike;
@@ -253,14 +259,14 @@ export class CompositeTokenMetadataProvider implements ITokenMetadataProvider {
   private readonly cache = new Map<string, RpcCacheEntry>();
 
   constructor(options: CompositeTokenMetadataProviderOptions) {
-    if (!options.apiKey) {
+    if (!options.apiKey && !options.rpcUrl) {
       // Defense in depth - wiring.ts already refuses to construct this
-      // without a key, but the class itself must never silently proceed
-      // unauthenticated if constructed some other way.
-      throw new Error("CompositeTokenMetadataProvider requires a non-empty apiKey (HELIUS_API_KEY)");
+      // without an endpoint, but the class itself must never silently
+      // proceed unauthenticated if constructed some other way.
+      throw new Error("CompositeTokenMetadataProvider requires a non-empty apiKey (HELIUS_API_KEY) or an rpcUrl (SOLANA_RPC_URL)");
     }
     const rpcFactory = options.rpcFactory ?? defaultRpcFactory;
-    this.rpc = rpcFactory(`https://mainnet.helius-rpc.com/?api-key=${options.apiKey}`);
+    this.rpc = rpcFactory(options.rpcUrl ?? heliusEndpoint(options.apiKey).httpUrl);
     this.dexScreener = options.dexScreener ?? new DexScreenerTokenMetadataProvider();
     this.cacheTtlMs = options.cacheTtlMs ?? DEFAULT_CACHE_TTL_MS;
     this.now = options.now ?? Date.now;

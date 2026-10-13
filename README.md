@@ -345,11 +345,26 @@ the on-chain `TradeEvent` logs into the same `NormalizedTradeEvent` shape
 the mock feed produces. If `FEED_PROVIDER=helius` is set and
 `HELIUS_API_KEY` is empty, the app refuses to start (`wiring.ts`'s
 `buildFeedProvider()`) rather than silently falling back to the mock feed.
-Get a key at https://helius.dev. See `HeliusFeedProvider.ts` and
-`pumpFunDecoder.ts` for the documented judgment calls this integration
-makes without a live key to verify against (which subscription approach
-was used and why, the trade-event byte layout, and the lack of a live
-SOL/USD price oracle).
+Get a key at https://helius.dev, or set `SOLANA_RPC_URL` to any Solana RPC
+endpoint instead (the public `https://api.mainnet-beta.solana.com` carries
+the full pump.fun log stream).
+
+Verified against live mainnet traffic: the decoder matches pump.fun's
+`TradeEvent` by its Anchor discriminator and reads the original field
+prefix of today's longer (382-431 byte) events; decoded token amounts,
+trader and block time match the on-chain transactions exactly. Each
+trade's bonding-curve real SOL reserves become `poolLiquidityUsd`, which
+`TokenStatsCollector` prefers over the metadata provider's liquidity -
+DexScreener reports none for bonding-curve pairs. SOL/USD comes from
+DexScreener's deepest SOL/USDC pool, refreshed every minute
+(`LiveSolUsdPrice`), falling back to $150 only until the first quote lands.
+
+**Live smoke test** - `npm run smoke:live` (or `npx tsx scripts/live-smoke.ts
+--minutes 10`) runs the full pipeline on the live pump.fun feed with paper
+execution and prints a report: feed throughput and ingest lag, discovered
+wallets, signals and top rejection reasons, paper positions and exits. It
+enables auto-discovery and relaxes the wallet/entry gates so every stage
+fires within minutes, so it tests the plumbing, not the strategy.
 
 ## Creator reputation
 
