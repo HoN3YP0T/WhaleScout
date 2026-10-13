@@ -442,6 +442,44 @@ To try it: set `walletDiscovery.enabled: true` (and optionally
 `autoPromote: true`) in `config/strategy.json` and run `npm run start` - do
 not commit that change, the shipped default is off.
 
+### Historical discovery (`npm run discover:whales`)
+
+Live discovery can only judge a wallet on trades it has watched since
+startup, and the shipped gate needs 15 round trips and $5k realized PnL - so
+in practice it never qualifies anyone. `scripts/discover-whales.ts` scores
+wallets from **history** instead:
+
+1. Picks a token universe. By default it watches the live pump.fun feed
+   for `--feed-minutes` (default 5) and takes the busiest tokens (at least
+   `--min-feed-trades` trades); `--source api` uses pump.fun's coins API
+   (recent launches + recently traded) instead. Either way, tokens whose
+   all-time-high market cap is below `--min-ath` (default $10k) are dropped.
+   Neither source selects on outcome, so rugs are included and records are
+   not inflated by sampling only winners. Launch time, creator, ATH and
+   graduation are derived from each token's own trade history when the
+   coins API isn't used; a token whose history is truncated gets no
+   launch time, so none of its buys count as early.
+2. Pulls each token's full trade history (bonding curve and post-graduation
+   PumpSwap; USD value at the time of each trade), up to `--max-pages` x 100
+   trades per token.
+3. Replays everything in time order through the live `WalletStatsUpdater`
+   and judges each wallet with the unchanged `scoreWallet()` hard gate.
+   Earliness is measured from each token's real launch time; a token counts
+   as rugged from the first trade below 25% of its running peak price.
+4. Adds copyability checks the gate lacks: median hold under 30s (the live
+   feed sees trades ~1.5-2s late, so a speed edge can't be followed), fewer
+   than 3 distinct tokens, or having deployed a scanned token.
+
+It writes `config/discovered-whales.json`. With `--apply`, wallets that pass
+the gate and look copyable are added to `config/watchlist.json` as
+`"pending"` - not traded until approved with Telegram `/approve`.
+
+Caveat: a wallet's record covers only its trades on the scanned tokens, not
+its whole history. The pump.fun APIs are undocumented. The trades API
+allows ~1,000 requests per window; the coins API (`--source api`) rejects
+requests closer than ~3s apart and throttles harder after bursts, which is
+why the live feed is the default universe source.
+
 ## Live trading
 
 `LIVE_TRADING_ENABLED=false` by default in `.env.example`. The execution
