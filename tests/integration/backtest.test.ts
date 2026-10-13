@@ -1,7 +1,7 @@
 import { readFileSync } from "node:fs";
 import { parseStrategyConfig } from "@whale-sniper/core";
 import { buildReport, buildGrid, runParameterSweep, runReplay } from "@whale-sniper/backtest";
-import { allScenarios } from "@whale-sniper/feed";
+import { allScenarios, normalWhaleBuyScenario } from "@whale-sniper/feed";
 import { describe, expect, it } from "vitest";
 
 const config = parseStrategyConfig(JSON.parse(readFileSync(new URL("../../config/strategy.json", import.meta.url), "utf-8")));
@@ -21,6 +21,28 @@ describe("backtest replayEngine", () => {
     expect(report.winRate).toBeGreaterThanOrEqual(0);
     expect(report.winRate).toBeLessThanOrEqual(1);
     expect(report.maxDrawdownPct).toBeGreaterThanOrEqual(0);
+  }, 20000);
+
+  it("stamps positions on the replay clock, so max-hold exits fire in simulated time", async () => {
+    const scenario = normalWhaleBuyScenario();
+    const first = scenario.events[0].blockTime;
+    const last = scenario.events[scenario.events.length - 1];
+    // One more tick on the scenario token, after the max hold has elapsed.
+    const late = { ...last, txSignature: "lateTick", blockTime: last.blockTime + config.position.maxHoldTimeSeconds + 60 };
+
+    const replay = await runReplay([...scenario.events, late], {
+      config,
+      watchlist,
+      tokenMetadataOverrides: [{ tokenMint: scenario.tokenMint, metadata: scenario.tokenMetadata }],
+    });
+    const positions = replay.positions.filter((p) => p.tokenMint === scenario.tokenMint);
+    expect(positions.length).toBeGreaterThan(0);
+    for (const p of positions) {
+      expect(p.openedAt).toBeGreaterThanOrEqual(first * 1000);
+      expect(p.openedAt).toBeLessThanOrEqual(last.blockTime * 1000);
+      expect(p.status).toBe("CLOSED");
+      expect(p.closedAt).toBe(late.blockTime * 1000);
+    }
   }, 20000);
 });
 

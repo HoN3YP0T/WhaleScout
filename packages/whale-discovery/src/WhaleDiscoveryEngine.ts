@@ -70,7 +70,7 @@ export class WhaleDiscoveryEngine {
       return () => {};
     }
     return this.deps.bus.on("wallet.stats-updated", (event) => {
-      void this.handle(event.wallet, event.tokenMint);
+      return this.handle(event.wallet, event.tokenMint);
     });
   }
 

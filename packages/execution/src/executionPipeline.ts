@@ -14,7 +14,7 @@ import {
 import type { IPositionRepository } from "@whale-sniper/db";
 import { buildPositionFromFill, estimateSlippagePct } from "@whale-sniper/paper-trading";
 import { evaluateEntryGate } from "@whale-sniper/signal-engine";
-import type { IExecutionAdapter } from "./IExecutionAdapter.js";
+import type { IExecutionAdapter, OrderResult } from "./IExecutionAdapter.js";
 import type { RiskEngine } from "./riskEngine.js";
 
 export interface EntryExecutionInput {
@@ -36,6 +36,10 @@ export interface EntryExecutionResult {
   position?: Position;
   timestamps: EventTimestamps;
   latencyMs: Record<string, number>;
+  /** True when the entry passed every gate and an order was submitted but
+   * did not fill (adapter error or failed result) - as opposed to a gate /
+   * risk-veto rejection, which never reaches submission. */
+  orderFailed?: boolean;
 }
 
 /**
@@ -53,6 +57,7 @@ export class ExecutionPipeline {
     private readonly positionRepo: IPositionRepository,
     private readonly bus: EventBus,
     private readonly config: StrategyConfig,
+    private readonly now: () => number = Date.now,
   ) {}
 
   async executeEntry(input: EntryExecutionInput): Promise<EntryExecutionResult> {
@@ -74,7 +79,7 @@ export class ExecutionPipeline {
       },
       this.config,
     );
-    timestamps.riskCheckedAt = Date.now();
+    timestamps.riskCheckedAt = this.now();
 
     const gateResult = evaluateEntryGate(
       {
@@ -96,21 +101,30 @@ export class ExecutionPipeline {
       return { passed: false, reasons: gateResult.reasons, timestamps, latencyMs: computeStageLatencies(timestamps) };
     }
 
-    timestamps.orderBuiltAt = Date.now();
-    const orderResult = await this.adapter.submitOrder({
-      tokenMint: input.tradeEvent.tokenMint,
-      side: "BUY",
-      usdValue: tradeSizeUsd,
-      quotePriceUsd: input.tradeEvent.priceUsd,
-      liquidityUsd: input.tokenStats.liquidityUsd,
-    });
+    timestamps.orderBuiltAt = this.now();
+    let orderResult: OrderResult;
+    try {
+      orderResult = await this.adapter.submitOrder({
+        tokenMint: input.tradeEvent.tokenMint,
+        side: "BUY",
+        usdValue: tradeSizeUsd,
+        quotePriceUsd: input.tradeEvent.priceUsd,
+        liquidityUsd: input.tokenStats.liquidityUsd,
+      });
+    } catch (err) {
+      // A live adapter's RPC/signing failure must surface as a failed order,
+      // not as an exception that unwinds the whole pipeline.
+      const reason = `order submission threw: ${err instanceof Error ? err.message : String(err)}`;
+      this.bus.emit("signal.rejected", { tokenMint: input.tradeEvent.tokenMint, reason });
+      return { passed: false, reasons: [reason], timestamps, latencyMs: computeStageLatencies(timestamps), orderFailed: true };
+    }
     timestamps.filledAt = orderResult.submittedAt;
     timestamps.confirmedAt = orderResult.confirmedAt;
 
     if (!orderResult.success) {
       const reason = orderResult.error ?? "order execution failed";
       this.bus.emit("signal.rejected", { tokenMint: input.tradeEvent.tokenMint, reason });
-      return { passed: false, reasons: [reason], timestamps, latencyMs: computeStageLatencies(timestamps) };
+      return { passed: false, reasons: [reason], timestamps, latencyMs: computeStageLatencies(timestamps), orderFailed: true };
     }
 
     const position = buildPositionFromFill(
@@ -126,6 +140,7 @@ export class ExecutionPipeline {
         tokenAmount: orderResult.tokenAmount,
       },
       this.config,
+      this.now(),
     );
 
     await this.positionRepo.savePosition(position);

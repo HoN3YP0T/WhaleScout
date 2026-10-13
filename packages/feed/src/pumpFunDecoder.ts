@@ -12,19 +12,24 @@ const PUMP_TOKEN_DECIMALS = 6;
 const PUMP_TOKEN_UNITS = 10 ** PUMP_TOKEN_DECIMALS;
 
 // Byte layout of pump.fun's Anchor "TradeEvent", as self-CPI-logged via
-// `Program data: <base64>` on every buy/sell. This is reverse-engineered
-// from the program's public IDL (widely mirrored by third-party pump.fun
-// tooling) rather than captured live - we have no Helius API key in this
-// build to record a real transaction against. The 8-byte Anchor event
-// discriminator is skipped rather than matched against a known value for
-// the same reason: we cannot verify the exact discriminator bytes without
-// a live sample, so this decoder validates structurally (field ranges,
-// buffer length) instead of by discriminator equality. If pump.fun's event
-// layout has since changed, `decodePumpFunTradeLog` returns null (never
-// throws) rather than misparsing garbage into a fake trade.
-const TRADE_EVENT_DISCRIMINATOR_LEN = 8;
+// `Program data: <base64>` on every buy/sell, per the program's public IDL
+// (not captured live - this build has no Helius API key).
+//
+// Identified by its Anchor event discriminator, which is not a guess:
+// Anchor defines it as sha256("event:TradeEvent")[0..8], and that matches
+// the value in pump.fun's published IDL. Matching it is what keeps other
+// events the program emits (CreateEvent, CompleteEvent, ...) from being
+// misparsed as trades.
+//
+// The decoder reads the original 121-byte field prefix and accepts a
+// LONGER payload: pump.fun has appended fields to TradeEvent since launch
+// (fee recipient/amounts, creator fee, ...). Anchor/Borsh appends new
+// fields at the end, so the prefix offsets are stable, whereas an
+// exact-length check would silently reject every current trade.
+const TRADE_EVENT_DISCRIMINATOR = Buffer.from([189, 219, 127, 211, 78, 230, 97, 238]);
+const TRADE_EVENT_DISCRIMINATOR_LEN = TRADE_EVENT_DISCRIMINATOR.length;
 const TRADE_EVENT_BODY_LEN = 32 + 8 + 8 + 1 + 32 + 8 + 8 + 8 + 8 + 8; // 121 bytes
-const TRADE_EVENT_TOTAL_LEN = TRADE_EVENT_DISCRIMINATOR_LEN + TRADE_EVENT_BODY_LEN;
+const TRADE_EVENT_MIN_LEN = TRADE_EVENT_DISCRIMINATOR_LEN + TRADE_EVENT_BODY_LEN;
 
 export interface PumpFunTradeEvent {
   mint: string;
@@ -69,9 +74,10 @@ function extractProgramDataPayloads(logs: string[]): Buffer[] {
 }
 
 function decodeTradeEventBuffer(buf: Buffer): PumpFunTradeEvent | null {
-  if (buf.length !== TRADE_EVENT_TOTAL_LEN) return null;
+  if (buf.length < TRADE_EVENT_MIN_LEN) return null;
+  if (!buf.subarray(0, TRADE_EVENT_DISCRIMINATOR_LEN).equals(TRADE_EVENT_DISCRIMINATOR)) return null;
 
-  let offset = TRADE_EVENT_DISCRIMINATOR_LEN; // skip discriminator, see module comment
+  let offset = TRADE_EVENT_DISCRIMINATOR_LEN;
   const mint = bs58.encode(buf.subarray(offset, offset + 32));
   offset += 32;
   const solAmountLamports = buf.readBigUInt64LE(offset);

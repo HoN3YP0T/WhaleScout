@@ -1,7 +1,9 @@
-import { CreatorRegistry, EventBus, RuggedTokenRegistry } from "@whale-sniper/core";
+import { CreatorRegistry, EventBus, RuggedTokenRegistry, SimulatedClock, TokenFirstSeenIndex } from "@whale-sniper/core";
 import { InMemoryTokenRepository } from "@whale-sniper/db";
 import { describe, expect, it } from "vitest";
 import { CreatorRegistryUpdater } from "./creatorRegistryUpdater.js";
+import { conservativeUnknownSeed, type ITokenMetadataProvider } from "./tokenMetadataProvider.js";
+import { TokenStatsCollector } from "./tokenStatsCollector.js";
 
 function baseStats(overrides: Partial<Parameters<InMemoryTokenRepository["upsertStats"]>[0]> = {}) {
   return {
@@ -105,3 +107,39 @@ async function flush(): Promise<void> {
   await new Promise((resolve) => setTimeout(resolve, 0));
   await new Promise((resolve) => setTimeout(resolve, 0));
 }
+
+describe("TokenStatsCollector -> CreatorRegistryUpdater", () => {
+  it("carries the provider's creator fields onto TokenStats so the creator registry actually learns", async () => {
+    const bus = new EventBus();
+    const tokenRepo = new InMemoryTokenRepository();
+    const creatorRegistry = new CreatorRegistry();
+    const ruggedRegistry = new RuggedTokenRegistry();
+    const provider: ITokenMetadataProvider = {
+      get: () => ({ ...conservativeUnknownSeed(), liquidityUsd: 5000, creatorAddress: "C1", creatorTokenLaunchCount: 7 }),
+    };
+    const collector = new TokenStatsCollector(bus, tokenRepo, provider, new TokenFirstSeenIndex(), ruggedRegistry, new SimulatedClock(0));
+    collector.start();
+    new CreatorRegistryUpdater(bus, tokenRepo, creatorRegistry, ruggedRegistry).start();
+
+    bus.emit("trade.normalized", {
+      id: "e1",
+      wallet: "W",
+      tokenMint: "T1",
+      side: "BUY",
+      tokenAmount: 100,
+      usdValue: 100,
+      priceUsd: 1,
+      dex: "pumpfun",
+      pool: "P",
+      slot: 1,
+      blockTime: 1000,
+      txSignature: "tx1",
+      timestamps: { rawReceivedAt: 0 },
+    });
+    await flush();
+
+    expect(collector.getStats("T1")?.creatorAddress).toBe("C1");
+    expect(collector.getStats("T1")?.creatorTokenLaunchCount).toBe(7);
+    expect(creatorRegistry.getReputation("C1")?.tokensCreated).toBe(1);
+  });
+});

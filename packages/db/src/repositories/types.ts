@@ -104,6 +104,9 @@ export interface IPositionRepository {
 
 export interface IWatchlistRepository {
   load(): Promise<WatchlistEntry[]>;
+  /** Inserts an entry, or refreshes an existing one's label/notes. An
+   * existing entry's status/source are kept: re-seeding config/watchlist.json
+   * on every boot must not re-activate a wallet an operator /reject'ed. */
   add(entry: WatchlistEntry): Promise<void>;
   /** Updates (or creates, for a wallet with no prior entry) a wallet's
    * status - used by `WhaleDiscoveryEngine` to move a candidate to

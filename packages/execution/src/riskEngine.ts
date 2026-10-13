@@ -25,9 +25,15 @@ export interface RiskVeto {
  * failure reason.
  */
 export class RiskEngine {
+  /** Tail of queued recordTradeResult() calls - see there. */
+  private resultQueue: Promise<void> = Promise.resolve();
+
   constructor(
     private readonly repo: IRiskStateRepository,
     private readonly runtimeFlags: RuntimeFlags,
+    /** Pipeline time, so cooldowns and the daily-loss window run on the
+     * replay's SimulatedClock in backtests rather than wall-clock. */
+    private readonly now: () => number = Date.now,
   ) {}
 
   async evaluate(input: RiskCheckInput, config: StrategyConfig): Promise<RiskVeto> {
@@ -38,7 +44,7 @@ export class RiskEngine {
     const state = await this.repo.get();
 
     if (state.killSwitchActive) return { vetoed: true, reason: "risk engine kill switch active" };
-    if (state.cooldownUntil && Date.now() < state.cooldownUntil) {
+    if (state.cooldownUntil && this.now() < state.cooldownUntil) {
       return { vetoed: true, reason: `cooldown active until ${new Date(state.cooldownUntil).toISOString()}` };
     }
     if (state.consecutiveLosses >= r.maxConsecutiveLosses) {
@@ -74,9 +80,17 @@ export class RiskEngine {
 
   /** Called after every closed trade to update the rolling risk state
    * (daily loss, consecutive losses, cooldown). */
-  async recordTradeResult(pnlUsd: number, config: StrategyConfig): Promise<void> {
+  recordTradeResult(pnlUsd: number, config: StrategyConfig): Promise<void> {
+    // Read-modify-write on shared state: two positions closing concurrently
+    // would otherwise both read the same counters and one loss would be lost.
+    const run = this.resultQueue.then(() => this.applyTradeResult(pnlUsd, config));
+    this.resultQueue = run.catch(() => undefined);
+    return run;
+  }
+
+  private async applyTradeResult(pnlUsd: number, config: StrategyConfig): Promise<void> {
     const state = await this.repo.get();
-    const now = Date.now();
+    const now = this.now();
 
     const dayMs = 24 * 60 * 60 * 1000;
     const resetDaily = now - state.dailyLossResetAt > dayMs;

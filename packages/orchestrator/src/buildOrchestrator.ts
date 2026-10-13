@@ -88,11 +88,14 @@ export function buildOrchestrator(options: BuildOrchestratorOptions): BuiltOrche
   const relationshipSource = options.relationshipSource ?? new MockWalletRelationshipSource();
   const clusterDetector = new ClusterDetector(bus, repos.cluster, repos.token, relationshipSource, ruggedRegistry, config);
 
-  const riskEngine = new RiskEngine(repos.riskState, runtimeFlags);
+  // Every component that stamps or compares times reads the same clock, so
+  // backtests (SimulatedClock) don't mix fixture time with wall-clock time.
+  const now = () => clock.now();
+  const riskEngine = new RiskEngine(repos.riskState, runtimeFlags, now);
   const executionAdapter = options.executionAdapter ?? new PaperExecutionAdapter(config);
-  const executionPipeline = new ExecutionPipeline(executionAdapter, riskEngine, repos.position, bus, config);
+  const executionPipeline = new ExecutionPipeline(executionAdapter, riskEngine, repos.position, bus, config, now);
 
-  const positionManager = new PositionManager(bus, repos.position, config);
+  const positionManager = new PositionManager(bus, repos.position, config, now);
   const whaleExitMonitor = new WhaleExitMonitor(bus, positionManager, config);
 
   const whaleDiscoveryEngine = new WhaleDiscoveryEngine({
@@ -119,6 +122,7 @@ export function buildOrchestrator(options: BuildOrchestratorOptions): BuiltOrche
     tokenStatsCollector,
     clusterDetector,
     executionPipeline,
+    riskEngine,
     positionManager,
     whaleExitMonitor,
     metrics,

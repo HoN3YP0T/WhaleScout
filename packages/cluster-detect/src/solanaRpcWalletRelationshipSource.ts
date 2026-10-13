@@ -356,16 +356,22 @@ export class SolanaRpcWalletRelationshipSource implements WalletRelationshipSour
       let earliest: string | undefined;
       for (let page = 0; page < this.maxSignaturePages; page += 1) {
         const sigs = await this.rpc.getSignaturesForAddress(address, { limit: SIGNATURE_PAGE_SIZE, before });
-        if (sigs.length === 0) break;
+        if (sigs.length === 0) {
+          // Empty page right after a full one: the history was an exact
+          // multiple of the page size and the previous page's last
+          // signature is genuinely the first. With no prior page, the
+          // address simply has no history.
+          return earliest === undefined ? undefined : await this.rpc.getTransaction(earliest);
+        }
         earliest = sigs[sigs.length - 1].signature;
         if (sigs.length < SIGNATURE_PAGE_SIZE) {
           // Short page = history ends here, so `earliest` is genuinely the
           // first signature of this address.
-          return earliest === undefined ? undefined : await this.rpc.getTransaction(earliest);
+          return await this.rpc.getTransaction(earliest);
         }
         before = earliest;
       }
-      return undefined; // cap hit (or empty history) - deliberately unknown
+      return undefined; // cap hit - deliberately unknown
     } catch {
       return undefined;
     }

@@ -86,19 +86,25 @@ export const positionSchema = z.object({
     }),
   ),
   trailingActivationPct: z.number().positive(),
-  trailingTrailPct: z.number().positive(),
-  initialStopLossPct: z.number().positive(),
+  // Both are percentages of price below a reference; at >=100 the stop
+  // price is <= 0 and can never trigger.
+  trailingTrailPct: z.number().positive().lt(100),
+  initialStopLossPct: z.number().positive().lt(100),
   maxHoldTimeSeconds: z.number().positive(),
 });
 
-export const whaleExitSchema = z.object({
-  warnThresholdPct: z.number().min(0).max(1),
-  reduceThresholdPct: z.number().min(0).max(1),
-  emergencyThresholdPct: z.number().min(0).max(1),
-  reduceSellFraction: z.number().min(0).max(1),
-  liquidityDeteriorationPct: z.number().min(0).max(1),
-  volumeReversalRatio: z.number().positive(),
-});
+export const whaleExitSchema = z
+  .object({
+    warnThresholdPct: z.number().min(0).max(1),
+    reduceThresholdPct: z.number().min(0).max(1),
+    emergencyThresholdPct: z.number().min(0).max(1),
+    reduceSellFraction: z.number().min(0).max(1),
+    liquidityDeteriorationPct: z.number().min(0).max(1),
+    volumeReversalRatio: z.number().positive(),
+  })
+  .refine((w) => w.warnThresholdPct <= w.reduceThresholdPct && w.reduceThresholdPct <= w.emergencyThresholdPct, {
+    message: "whaleExit thresholds must satisfy warn <= reduce <= emergency",
+  });
 
 export const riskSchema = z.object({
   maxTradeSizeUsd: z.number().positive(),

@@ -481,3 +481,8 @@ repositories and flip runtime flags (or, for `/approve` and `/reject`,
 update watchlist status) - they never call execution or position management
 directly. `/candidates`, `/approve`, and `/reject` are whale-discovery's
 review workflow - see "Whale auto-discovery" above.
+
+Commands are only accepted from the chat set in `TELEGRAM_CHAT_ID`; updates
+from any other chat are ignored and logged. With `TELEGRAM_CHAT_ID` unset,
+no chat is authorized and commands are disabled - anyone can message a bot
+whose username they know, and `/approve` makes a wallet tradeable.

@@ -1,6 +1,6 @@
 import type { EventBus, NormalizedTradeEvent, Position, StrategyConfig } from "@whale-sniper/core";
 import type { PositionManager } from "@whale-sniper/position-mgmt";
-import { evaluateWhaleExitTier, type IndependentFlags } from "./whaleExitTier.js";
+import { evaluateWhaleExitTier, type IndependentFlags, type WhaleExitTier } from "./whaleExitTier.js";
 
 interface TrackedWhale {
   position: Position;
@@ -9,7 +9,13 @@ interface TrackedWhale {
   entryTokenAmount: number;
   cumulativeSoldTokenAmount: number;
   sellTxCount: number;
+  /** Highest tier already acted on. Each tier's exit runs once: without
+   * this, every further whale sell while still in REDUCE would sell
+   * reduceSellFraction of what's left again. */
+  actedTier: WhaleExitTier;
 }
+
+const TIER_RANK: Record<WhaleExitTier, number> = { NONE: 0, WARN: 1, REDUCE: 2, EMERGENCY: 3 };
 
 const NO_FLAGS: IndependentFlags = {
   multipleExits: false,
@@ -37,7 +43,7 @@ export class WhaleExitMonitor {
 
   start(): () => void {
     return this.bus.on("trade.normalized", (event) => {
-      void this.handle(event);
+      return this.handle(event);
     });
   }
 
@@ -53,6 +59,7 @@ export class WhaleExitMonitor {
       entryTokenAmount: triggeringTradeTokenAmount,
       cumulativeSoldTokenAmount: 0,
       sellTxCount: 0,
+      actedTier: "NONE",
     });
   }
 
@@ -83,7 +90,8 @@ export class WhaleExitMonitor {
       state.position.whaleState.tier = tier;
       state.position.whaleState.lastCheckedAt = Date.now();
 
-      if (tier === "NONE") continue;
+      if (TIER_RANK[tier] <= TIER_RANK[state.actedTier]) continue;
+      state.actedTier = tier;
 
       this.bus.emit("whale.exit-detected", { wallet: event.wallet, tokenMint: event.tokenMint, pctSold: cumulativeSoldFraction });
 

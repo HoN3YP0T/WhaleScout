@@ -126,6 +126,17 @@ describe("RiskEngine", () => {
   });
 });
 
+describe("RiskEngine.recordTradeResult", () => {
+  it("counts every loss when several closes are recorded concurrently", async () => {
+    const repo = new InMemoryRiskStateRepository();
+    const engine = new RiskEngine(repo, new RuntimeFlags());
+    await Promise.all([engine.recordTradeResult(-10, config), engine.recordTradeResult(-20, config), engine.recordTradeResult(-30, config)]);
+    const state = await repo.get();
+    expect(state.consecutiveLosses).toBe(3);
+    expect(state.dailyLossUsd).toBe(60);
+  });
+});
+
 describe("EventBus sanity for execution", () => {
   it("delivers emitted events to subscribers", () => {
     const bus = new EventBus();

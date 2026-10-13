@@ -6,6 +6,8 @@ import {
   formatWhaleAutoPromoted,
   formatWhaleCandidateDiscovered,
   formatWhaleDetected,
+  isAuthorizedChat,
+  isValidWalletAddress,
   TelegramBot,
 } from "@whale-sniper/telegram-bot";
 import { describe, expect, it } from "vitest";
@@ -85,6 +87,23 @@ describe("TelegramBot", () => {
       logger: createLogger("test", "silent"),
     });
     await expect(bot.start()).resolves.toBeUndefined();
+  });
+});
+
+describe("telegram command authorization", () => {
+  it("only authorizes the configured chat, and nobody when none is configured", () => {
+    expect(isAuthorizedChat("12345", 12345)).toBe(true);
+    expect(isAuthorizedChat("-100777", "-100777")).toBe(true);
+    expect(isAuthorizedChat("12345", 99999)).toBe(false);
+    expect(isAuthorizedChat("12345", undefined)).toBe(false);
+    expect(isAuthorizedChat("", 12345)).toBe(false);
+  });
+
+  it("validates /approve and /reject addresses as base58 Solana public keys", () => {
+    expect(isValidWalletAddress("6EF8rrecthR5Dkzon8Nwu78hRvfCKubJ14M5uBEwF6P")).toBe(true);
+    expect(isValidWalletAddress("<script>alert(1)</script>")).toBe(false);
+    expect(isValidWalletAddress("0OIl0OIl0OIl0OIl0OIl0OIl0OIl0OIl")).toBe(false);
+    expect(isValidWalletAddress("short")).toBe(false);
   });
 });
 

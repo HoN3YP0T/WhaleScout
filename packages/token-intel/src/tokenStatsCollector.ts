@@ -53,7 +53,7 @@ export class TokenStatsCollector {
 
   start(): () => void {
     return this.bus.on("trade.normalized", (event) => {
-      void this.handle(event);
+      return this.handle(event);
     });
   }
 
@@ -113,6 +113,10 @@ export class TokenStatsCollector {
       top10HolderPct: meta.top10HolderPct,
       mintAuthorityRevoked: meta.mintAuthorityRevoked,
       freezeAuthorityRevoked: meta.freezeAuthorityRevoked,
+      // Carried through so CreatorRegistryUpdater and creatorRiskComponent
+      // (both of which read TokenStats, not the provider) can see them.
+      creatorAddress: meta.creatorAddress,
+      creatorTokenLaunchCount: meta.creatorTokenLaunchCount,
       uniqueBuyers1h,
       uniqueSellers1h,
       buyVolumeUsd5m,

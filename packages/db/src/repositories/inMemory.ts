@@ -127,7 +127,12 @@ export class InMemoryWatchlistRepository implements IWatchlistRepository {
     return [...this.entries.values()];
   }
   async add(entry: WatchlistEntry): Promise<void> {
-    this.entries.set(entry.address, normalizeWatchlistEntry(entry));
+    const existing = this.entries.get(entry.address);
+    const normalized = normalizeWatchlistEntry(entry);
+    this.entries.set(
+      entry.address,
+      existing ? { ...normalized, status: existing.status, source: existing.source } : normalized,
+    );
   }
   async updateStatus(address: string, status: WatchlistEntryStatus, notes?: string): Promise<void> {
     const existing = this.entries.get(address) ?? normalizeWatchlistEntry({ address, source: "auto-discovered" });

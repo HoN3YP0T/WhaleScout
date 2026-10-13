@@ -10,7 +10,7 @@ import {
 } from "@whale-sniper/core";
 import type { ClusterDetector } from "@whale-sniper/cluster-detect";
 import type { Repositories } from "@whale-sniper/db";
-import type { ExecutionPipeline } from "@whale-sniper/execution";
+import type { ExecutionPipeline, RiskEngine } from "@whale-sniper/execution";
 import type { MetricsStore } from "@whale-sniper/monitoring";
 import type { PositionManager } from "@whale-sniper/position-mgmt";
 import { computeSignal } from "@whale-sniper/signal-engine";
@@ -32,6 +32,7 @@ export interface OrchestratorDeps {
   tokenStatsCollector: TokenStatsCollector;
   clusterDetector: ClusterDetector;
   executionPipeline: ExecutionPipeline;
+  riskEngine: RiskEngine;
   positionManager: PositionManager;
   whaleExitMonitor: WhaleExitMonitor;
   metrics: MetricsStore;
@@ -49,7 +50,13 @@ export interface OrchestratorDeps {
  */
 export class SniperOrchestrator {
   private openPositionsByToken = new Map<string, Position[]>();
+  /** Every position opened this session that has not reported closed yet -
+   * lets the position.closed handler find the Position (with its final PnL)
+   * from the event's id alone. */
+  private openPositionsById = new Map<string, Position>();
   private unsubscribers: Array<() => void> = [];
+  /** Tail of the entry critical section - see runEntryExclusive(). */
+  private entryQueue: Promise<unknown> = Promise.resolve();
 
   constructor(private readonly deps: OrchestratorDeps) {}
 
@@ -62,10 +69,34 @@ export class SniperOrchestrator {
       this.deps.whaleExitMonitor.start(),
       this.deps.whaleDiscoveryEngine.start(),
       this.deps.metrics.start(this.deps.bus),
-      this.deps.bus.on("trade.normalized", (event) => {
-        void this.handle(event);
-      }),
+      this.deps.bus.on("trade.normalized", (event) => this.handle(event)),
+      this.deps.bus.on("position.closed", ({ positionId }) => this.onPositionClosed(positionId)),
     );
+  }
+
+  /** Feeds every closed trade's result into the risk engine (daily loss,
+   * consecutive losses, post-loss cooldown) and into metrics (realized PnL /
+   * drawdown alerts). Without this, those limits never trip. */
+  private async onPositionClosed(positionId: string): Promise<void> {
+    const position = this.openPositionsById.get(positionId);
+    if (!position) return;
+    this.openPositionsById.delete(positionId);
+    this.deps.metrics.recordRealizedPnl(position.realizedPnlUsd);
+    await this.deps.riskEngine.recordTradeResult(position.realizedPnlUsd, this.deps.config);
+  }
+
+  /**
+   * Runs `fn` only after every previously queued entry decision has finished.
+   * handle() runs concurrently for every trade (each is a separate bus
+   * callback with several awaits), so without this two whale buys arriving
+   * together would both read exposure before either position was tracked and
+   * both pass maxOpenPositions / max*ExposureUsd - including two entries on
+   * the same token from one whale's back-to-back buys.
+   */
+  private runEntryExclusive<T>(fn: () => Promise<T>): Promise<T> {
+    const run = this.entryQueue.then(fn, fn);
+    this.entryQueue = run.catch(() => undefined);
+    return run;
   }
 
   stop(): void {
@@ -74,6 +105,7 @@ export class SniperOrchestrator {
   }
 
   private trackPosition(position: Position): void {
+    this.openPositionsById.set(position.positionId, position);
     const arr = this.openPositionsByToken.get(position.tokenMint) ?? [];
     arr.push(position);
     this.openPositionsByToken.set(position.tokenMint, arr);
@@ -160,42 +192,49 @@ export class SniperOrchestrator {
     this.deps.metrics.recordSignalGenerated();
     this.deps.bus.emit("signal.generated", { signalId: signal.signalId, tokenMint: signal.tokenMint, score: signal.score });
 
-    const exposure = this.openExposure();
-    const clusterExposureUsd = cluster
-      ? [...this.openPositionsByToken.values()]
-          .flat()
-          .filter((p) => p.status === "OPEN" && cluster.members.includes(p.whaleState.wallet))
-          .reduce((s, p) => s + p.remainingTokenAmount * p.currentPriceUsd, 0)
-      : 0;
+    await this.runEntryExclusive(async () => {
+      // Exposure is read and the resulting position tracked inside one
+      // exclusive section, so the next entry always sees this one.
+      const exposure = this.openExposure();
+      const clusterExposureUsd = cluster
+        ? [...this.openPositionsByToken.values()]
+            .flat()
+            .filter((p) => p.status === "OPEN" && cluster.members.includes(p.whaleState.wallet))
+            .reduce((s, p) => s + p.remainingTokenAmount * p.currentPriceUsd, 0)
+        : 0;
 
-    const result = await this.deps.executionPipeline.executeEntry({
-      tradeEvent: event,
-      walletScore,
-      tokenRisk,
-      tokenStats,
-      signal,
-      cluster,
-      openPositionsCount: exposure.openPositionsCount,
-      totalExposureUsd: exposure.totalExposureUsd,
-      perTokenExposureUsd: exposure.perTokenExposureUsd(event.tokenMint),
-      perClusterExposureUsd: clusterExposureUsd,
+      const result = await this.deps.executionPipeline.executeEntry({
+        tradeEvent: event,
+        walletScore,
+        tokenRisk,
+        tokenStats,
+        signal,
+        cluster,
+        openPositionsCount: exposure.openPositionsCount,
+        totalExposureUsd: exposure.totalExposureUsd,
+        perTokenExposureUsd: exposure.perTokenExposureUsd(event.tokenMint),
+        perClusterExposureUsd: clusterExposureUsd,
+      });
+
+      this.deps.metrics.recordLatencies(result.latencyMs);
+
+      if (!result.passed) {
+        // Entry gate / risk veto rejections never reached order submission -
+        // metrics.start() already counts them via signal.rejected. Only a
+        // submitted order that failed to fill is an order failure.
+        if (result.orderFailed) {
+          this.deps.metrics.recordOrderSubmitted();
+          this.deps.metrics.recordOrderFailed();
+        }
+        return;
+      }
+
+      this.deps.metrics.recordOrderSubmitted();
+      this.deps.metrics.recordOrderConfirmed();
+      if (result.position) {
+        this.trackPosition(result.position);
+        this.deps.whaleExitMonitor.track(result.position, event.tokenAmount);
+      }
     });
-
-    this.deps.metrics.recordLatencies(result.latencyMs);
-
-    if (!result.passed) {
-      // Entry gate / risk veto rejections are not order failures - they
-      // never reached order submission. metrics.start() already counts
-      // these via the signal.rejected event; recordOrderFailed() is
-      // reserved for a submitted order that actually failed to fill.
-      return;
-    }
-
-    this.deps.metrics.recordOrderSubmitted();
-    this.deps.metrics.recordOrderConfirmed();
-    if (result.position) {
-      this.trackPosition(result.position);
-      this.deps.whaleExitMonitor.track(result.position, event.tokenAmount);
-    }
   }
 }

@@ -157,7 +157,8 @@ model Position {
   tokenMint          String
   token              Token    @relation(fields: [tokenMint], references: [mint])
   signalId           String
-  signal             Signal   @relation(fields: [signalId], references: [id])
+  // signalId holds Signal.signalKey (the domain id), not the row's cuid.
+  signal             Signal   @relation(fields: [signalId], references: [signalKey])
   walletAddress      String
   wallet             Wallet   @relation(fields: [walletAddress], references: [address])
   status             String

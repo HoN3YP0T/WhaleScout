@@ -13,9 +13,10 @@ export class PositionManager {
     private readonly bus: EventBus,
     private readonly repo: IPositionRepository,
     private readonly config: StrategyConfig,
+    private readonly now: () => number = Date.now,
   ) {}
 
-  async onPriceTick(position: Position, priceUsd: number, liquidityUsd: number, nowMs: number = Date.now()): Promise<Position> {
+  async onPriceTick(position: Position, priceUsd: number, liquidityUsd: number, nowMs: number = this.now()): Promise<Position> {
     if (position.status === "CLOSED") return position;
 
     applyPriceTick(position, priceUsd, this.config);
@@ -25,12 +26,20 @@ export class PositionManager {
       if (outcome.kind === "NO_ACTION") break;
 
       if (outcome.kind === "PARTIAL_EXIT") {
-        applyPaperExit(position, priceUsd, outcome.sellFraction, liquidityUsd, this.config, outcome.reason);
+        applyPaperExit(position, priceUsd, outcome.sellFraction, liquidityUsd, this.config, outcome.reason, nowMs);
         markTakeProfitFilled(position, outcome.triggerPct);
         await this.repo.savePosition(position);
+        // A ladder level that sells everything that's left (e.g. levels
+        // summing to 100%) closes the position - report it as a close, or
+        // every position.closed consumer (metrics, risk engine, Telegram)
+        // misses it.
+        if ((position.status as string) === "CLOSED") {
+          this.bus.emit("position.closed", { positionId: position.positionId, reason: outcome.reason });
+          break;
+        }
         this.bus.emit("position.updated", { positionId: position.positionId });
       } else {
-        applyPaperExit(position, priceUsd, 1, liquidityUsd, this.config, outcome.reason);
+        applyPaperExit(position, priceUsd, 1, liquidityUsd, this.config, outcome.reason, nowMs);
         await this.repo.savePosition(position);
         this.bus.emit("position.closed", { positionId: position.positionId, reason: outcome.reason });
         break;
@@ -54,7 +63,7 @@ export class PositionManager {
     reason: Position["exitReason"],
   ): Promise<Position> {
     if (position.status === "CLOSED") return position;
-    applyPaperExit(position, priceUsd, sellFraction, liquidityUsd, this.config, reason);
+    applyPaperExit(position, priceUsd, sellFraction, liquidityUsd, this.config, reason, this.now());
     await this.repo.savePosition(position);
     // applyPaperExit may have just flipped status to CLOSED via mutation,
     // which TS can't see through the call above - compare through `string`

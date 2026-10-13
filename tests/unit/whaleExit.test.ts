@@ -125,6 +125,25 @@ describe("WhaleExitMonitor end-to-end tiers", () => {
     expect(position.exitReason).toBe("WHALE_EXIT_EMERGENCY");
   });
 
+  it("applies a REDUCE exit once, not again on every further whale sell within the same tier", async () => {
+    const bus = new EventBus();
+    const manager = new PositionManager(bus, new InMemoryPositionRepository(), config);
+    const position = openPaperPosition(signal(), "W", "tx1", tokenStats(), 1000, 1, config);
+    const monitor = new WhaleExitMonitor(bus, manager, config);
+    monitor.track(position, 10000);
+    monitor.start();
+
+    bus.emit("trade.normalized", sellEvent("W", 3500)); // 35% -> REDUCE
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    const afterFirst = position.remainingTokenAmount;
+    expect(afterFirst).toBeCloseTo(position.tokenAmount * (1 - config.whaleExit.reduceSellFraction));
+
+    bus.emit("trade.normalized", sellEvent("W", 500)); // 40% -> still REDUCE
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    expect(position.remainingTokenAmount).toBe(afterFirst);
+    expect(position.status).toBe("OPEN");
+  });
+
   it("does not touch the position for a small whale sell below the warn threshold", async () => {
     const bus = new EventBus();
     const repo = new InMemoryPositionRepository();

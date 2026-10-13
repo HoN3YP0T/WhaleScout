@@ -92,7 +92,7 @@ export class WalletStatsUpdater {
 
   start(): () => void {
     return this.bus.on("trade.normalized", (event) => {
-      void this.handle(event);
+      return this.handle(event);
     });
   }
 
@@ -143,6 +143,9 @@ export class WalletStatsUpdater {
   }
 
   private handleSell(acc: WalletAccumulator, event: NormalizedTradeEvent): void {
+    // Proceeds are priced per unit below; a zero/garbage amount would turn
+    // realizedPnl/roi into NaN and poison this wallet's stats permanently.
+    if (!(event.tokenAmount > 0) || !Number.isFinite(event.usdValue)) return;
     const lot = acc.openLots.get(event.tokenMint);
     if (!lot || lot.quantity <= 0) return; // selling something we never tracked a buy for
 

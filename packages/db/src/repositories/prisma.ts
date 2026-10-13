@@ -453,6 +453,13 @@ function rowToWatchlistEntry(row: any): WatchlistEntry {
 export class PrismaWatchlistRepository implements IWatchlistRepository {
   constructor(private readonly prisma: any) {}
 
+  /** Watchlist.walletAddress is a foreign key to Wallet, and a watchlisted
+   * wallet usually has no Wallet row yet (it is only created once its first
+   * trade is observed) - so create a bare one first, or the insert fails. */
+  private async ensureWallet(address: string): Promise<void> {
+    await this.prisma.wallet.upsert({ where: { address }, create: { address }, update: {} });
+  }
+
   async load(): Promise<WatchlistEntry[]> {
     const rows = await this.prisma.watchlist.findMany();
     return rows.map(rowToWatchlistEntry);
@@ -460,6 +467,7 @@ export class PrismaWatchlistRepository implements IWatchlistRepository {
 
   async add(entry: WatchlistEntry): Promise<void> {
     const normalized = normalizeWatchlistEntry(entry);
+    await this.ensureWallet(normalized.address);
     await this.prisma.watchlist.upsert({
       where: { walletAddress: normalized.address },
       create: {
@@ -469,11 +477,13 @@ export class PrismaWatchlistRepository implements IWatchlistRepository {
         status: normalized.status,
         source: normalized.source,
       },
-      update: { label: normalized.label, notes: normalized.notes, status: normalized.status, source: normalized.source },
+      // status/source deliberately not updated - see IWatchlistRepository.add.
+      update: { label: normalized.label, notes: normalized.notes },
     });
   }
 
   async updateStatus(address: string, status: WatchlistEntryStatus, notes?: string): Promise<void> {
+    await this.ensureWallet(address);
     await this.prisma.watchlist.upsert({
       where: { walletAddress: address },
       // A status update for an address with no prior watchlist row only
@@ -514,6 +524,9 @@ export class PrismaRiskStateRepository implements IRiskStateRepository {
       create: { id: "singleton" },
       update: {
         dailyLossUsd: partial.dailyLossUsd,
+        // Without this the 24h daily-loss window never rolls over: every
+        // later recordTradeResult() sees the original reset time.
+        dailyLossResetAt: partial.dailyLossResetAt !== undefined ? new Date(partial.dailyLossResetAt) : undefined,
         consecutiveLosses: partial.consecutiveLosses,
         killSwitchActive: partial.killSwitchActive,
         cooldownUntil: partial.cooldownUntil ? new Date(partial.cooldownUntil) : undefined,

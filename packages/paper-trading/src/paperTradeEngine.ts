@@ -13,6 +13,10 @@ export function buildPositionFromFill(
   tradeSizeUsd: number,
   fill: FillResult,
   config: StrategyConfig,
+  /** Pipeline time (a SimulatedClock in backtests). Position-management
+   * compares this against the same clock for max-hold, so it must not be
+   * wall-clock when the pipeline isn't. */
+  nowMs: number = Date.now(),
 ): Position {
   const entryPriceUsd = fill.filledPriceUsd;
   const tokenAmount = fill.tokenAmount;
@@ -42,14 +46,14 @@ export function buildPositionFromFill(
       entryTxSignature: triggeringTxSignature,
       cumulativeSoldFraction: 0,
       tier: "NONE",
-      lastCheckedAt: Date.now(),
+      lastCheckedAt: nowMs,
     },
     realizedPnlUsd: -fill.feesUsd,
     unrealizedPnlUsd: 0,
     mfePct: 0,
     maePct: 0,
     feesUsd: fill.feesUsd,
-    openedAt: Date.now(),
+    openedAt: nowMs,
   };
 }
 
@@ -85,6 +89,7 @@ export function applyPaperExit(
   liquidityUsd: number,
   config: StrategyConfig,
   exitReason: Position["exitReason"],
+  nowMs: number = Date.now(),
 ): ExitResult {
   const sellTokenAmount = position.remainingTokenAmount * sellFraction;
   const grossUsdValue = sellTokenAmount * currentQuotePriceUsd;
@@ -102,7 +107,7 @@ export function applyPaperExit(
   const fullyClosed = position.remainingTokenAmount <= position.tokenAmount * 1e-6;
   if (fullyClosed) {
     position.status = "CLOSED";
-    position.closedAt = Date.now();
+    position.closedAt = nowMs;
     position.exitReason = exitReason;
     position.remainingTokenAmount = 0;
     position.unrealizedPnlUsd = 0;

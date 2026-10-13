@@ -30,6 +30,24 @@ export interface TelegramBotDeps {
   logger: Logger;
 }
 
+/** Solana addresses are 32-byte public keys, base58-encoded to 32-44 chars. */
+const SOLANA_ADDRESS_RE = /^[1-9A-HJ-NP-Za-km-z]{32,44}$/;
+
+/**
+ * Commands mutate trading state (/resume, /kill, and /approve, which makes a
+ * wallet tradeable), so only the configured TELEGRAM_CHAT_ID may issue
+ * them. Anyone can message a bot whose username they know. Fails closed:
+ * with no chat id configured, nobody is authorized.
+ */
+export function isAuthorizedChat(configuredChatId: string, incomingChatId: number | string | undefined): boolean {
+  if (!configuredChatId || incomingChatId === undefined) return false;
+  return String(incomingChatId) === configuredChatId;
+}
+
+export function isValidWalletAddress(address: string): boolean {
+  return SOLANA_ADDRESS_RE.test(address);
+}
+
 /**
  * Notifications/control only - never in the execution critical path.
  * Commands read repositories and flip runtime flags; they never call
@@ -50,13 +68,32 @@ export class TelegramBot {
     }
 
     this.bot = new Bot(this.deps.token);
+    if (!this.deps.chatId) {
+      this.deps.logger.warn({}, "TELEGRAM_CHAT_ID not set - telegram commands are disabled (no chat is authorized)");
+    }
+    // Without a handler grammY stops polling and rethrows on the first
+    // error thrown by a command (e.g. a repository failure).
+    this.bot.catch((err) => {
+      this.deps.logger.error({ err: err.error instanceof Error ? err.error.message : String(err.error) }, "telegram command failed");
+    });
+    this.bot.use(async (ctx, next) => {
+      if (!isAuthorizedChat(this.deps.chatId, ctx.chat?.id)) {
+        this.deps.logger.warn({ chatId: ctx.chat?.id, from: ctx.from?.id }, "ignoring telegram update from unauthorized chat");
+        return;
+      }
+      await next();
+    });
     this.registerCommands(this.bot);
     this.registerNotifications();
 
     // Long-polling - intentionally not awaited by the caller.
-    void this.bot.start({
-      onStart: () => this.deps.logger.info({}, "telegram bot started"),
-    });
+    // An invalid token or a network failure rejects this promise; leaving
+    // it unhandled would terminate the whole process, trading included.
+    this.bot
+      .start({ onStart: () => this.deps.logger.info({}, "telegram bot started") })
+      .catch((err: unknown) => {
+        this.deps.logger.error({ err: err instanceof Error ? err.message : String(err) }, "telegram bot stopped polling");
+      });
   }
 
   async stop(): Promise<void> {
@@ -132,6 +169,10 @@ export class TelegramBot {
         await ctx.reply("Usage: /approve <address>");
         return;
       }
+      if (!isValidWalletAddress(address)) {
+        await ctx.reply(`Not a valid Solana address: ${address}`);
+        return;
+      }
       await this.deps.watchlistRepo.updateStatus(address, "active", "approved via telegram /approve");
       this.deps.watchlistIndex?.upsert({ address, status: "active", source: "auto-discovered" });
       await ctx.reply(`Approved ${address} - now active on the watchlist.`);
@@ -141,6 +182,10 @@ export class TelegramBot {
       const address = String(ctx.match ?? "").trim();
       if (!address) {
         await ctx.reply("Usage: /reject <address>");
+        return;
+      }
+      if (!isValidWalletAddress(address)) {
+        await ctx.reply(`Not a valid Solana address: ${address}`);
         return;
       }
       await this.deps.watchlistRepo.updateStatus(address, "rejected", "rejected via telegram /reject");

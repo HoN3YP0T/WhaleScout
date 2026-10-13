@@ -33,7 +33,7 @@ export class CreatorRegistryUpdater {
 
   start(): () => void {
     return this.bus.on("token.stats-updated", (event) => {
-      void this.handle(event.tokenMint);
+      return this.handle(event.tokenMint);
     });
   }
 

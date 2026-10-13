@@ -249,6 +249,21 @@ describe("SolanaRpcWalletRelationshipSource", () => {
     expect(rpc.calls()).toBe(afterFirst);
   });
 
+  it("resolves a history that is an exact multiple of the page size", async () => {
+    // One full page, then an empty one: the full page's last signature is
+    // the first, and must not be recorded as unknown.
+    const signatures = Array.from({ length: 1000 }, (_, i) => `sig-${i}`);
+    const rpc = fakeRpc({
+      signatures: { [WALLET_A]: signatures, [MINT]: ["m-first"] },
+      transactions: { [signatures[999]]: fundingTx(FUNDER, WALLET_A), "m-first": mintCreationTx(FUNDER, MINT) },
+    });
+    const source = build(rpc);
+
+    await source.prefetch(MINT, [WALLET_A]);
+    expect(source.relationshipDataKnown(MINT, WALLET_A)).toBe(true);
+    expect(source.isCreatorAssociated(MINT, WALLET_A)).toBe(true);
+  });
+
   it("walks back through full pages to the real earliest signature", async () => {
     const pageSize = 1000;
     const first = Array.from({ length: pageSize }, (_, i) => `p0-${i}`);

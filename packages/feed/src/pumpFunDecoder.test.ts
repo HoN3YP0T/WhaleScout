@@ -1,3 +1,4 @@
+import { createHash } from "node:crypto";
 import bs58 from "bs58";
 import { describe, expect, it } from "vitest";
 import {
@@ -25,11 +26,9 @@ function encodeTradeEventFixture(fields: {
   virtualTokenReserves: bigint;
   realSolReserves: bigint;
   realTokenReserves: bigint;
-}): Buffer {
-  const buf = Buffer.alloc(8 + 121);
-  // Discriminator bytes are arbitrary here - the decoder deliberately does
-  // not check them (see pumpFunDecoder.ts comment), only structural shape.
-  buf.write("dscrmntr", 0, "utf-8");
+}, trailingBytes = 0): Buffer {
+  const buf = Buffer.alloc(8 + 121 + trailingBytes);
+  TRADE_EVENT_DISCRIMINATOR.copy(buf, 0);
   let offset = 8;
   Buffer.from(bs58.decode(fields.mint)).copy(buf, offset);
   offset += 32;
@@ -57,7 +56,13 @@ function encodeTradeEventFixture(fields: {
 const MINT = "So11111111111111111111111111111111111111112";
 const USER = "Vote111111111111111111111111111111111111111";
 
-function fixtureNotification(overrides: Partial<Parameters<typeof encodeTradeEventFixture>[0]> = {}): PumpFunLogsNotification {
+// sha256("event:TradeEvent")[0..8] - Anchor's event discriminator.
+const TRADE_EVENT_DISCRIMINATOR = createHash("sha256").update("event:TradeEvent").digest().subarray(0, 8);
+
+function fixtureNotification(
+  overrides: Partial<Parameters<typeof encodeTradeEventFixture>[0]> = {},
+  trailingBytes = 0,
+): PumpFunLogsNotification {
   const fields = {
     mint: MINT,
     user: USER,
@@ -71,7 +76,7 @@ function fixtureNotification(overrides: Partial<Parameters<typeof encodeTradeEve
     realTokenReserves: 500_000_000_000n,
     ...overrides,
   };
-  const buf = encodeTradeEventFixture(fields);
+  const buf = encodeTradeEventFixture(fields, trailingBytes);
   return {
     signature: "fixtureSig1",
     err: null,
@@ -122,6 +127,23 @@ describe("decodePumpFunTradeLog", () => {
       err: null,
       logs: [`Program data: ${Buffer.from("too short").toString("base64")}`],
     };
+    expect(decodePumpFunTradeLog(notification)).toBeNull();
+  });
+
+  it("decodes a TradeEvent carrying fields appended after the original layout", () => {
+    // Current pump.fun TradeEvents append fee/creator-fee fields after the
+    // original 121-byte body.
+    const decoded = decodePumpFunTradeLog(fixtureNotification({}, 96));
+    expect(decoded?.mint).toBe(MINT);
+    expect(decoded?.solAmountLamports).toBe(2_000_000_000n);
+  });
+
+  it("rejects a correctly sized payload whose discriminator is not TradeEvent's", () => {
+    const notification = fixtureNotification();
+    const line = notification.logs.find((l) => l.startsWith("Program data: "))!;
+    const buf = Buffer.from(line.slice("Program data: ".length), "base64");
+    buf.write("dscrmntr", 0, "utf-8");
+    notification.logs = [`Program data: ${buf.toString("base64")}`];
     expect(decodePumpFunTradeLog(notification)).toBeNull();
   });
 

@@ -17,7 +17,7 @@
     "start": "tsx apps/sniper-runner/src/main.ts",
     "backtest": "tsx scripts/run-backtest.ts",
     "seed:watchlist": "tsx scripts/seed-watchlist.ts",
-    "typecheck": "tsc -b tsconfig.base.json --noEmit || true",
+    "typecheck": "tsc -p tsconfig.json",
     "db:generate": "prisma generate --schema packages/db/prisma/schema.prisma",
     "db:migrate": "prisma migrate dev --name init --schema packages/db/prisma/schema.prisma",
     "verify:feed": "tsx scripts/verify-feed.ts"

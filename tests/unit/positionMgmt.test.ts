@@ -56,6 +56,25 @@ function setup() {
 }
 
 describe("position state machine", () => {
+  it("emits position.closed (not position.updated) when a take-profit rung sells the remainder", async () => {
+    const ladderConfig = structuredClone(config);
+    ladderConfig.position.takeProfitLadder = [
+      { triggerPct: 10, sellFraction: 0.5 },
+      { triggerPct: 20, sellFraction: 0.5 },
+    ];
+    const bus = new EventBus();
+    const manager = new PositionManager(bus, new InMemoryPositionRepository(), ladderConfig);
+    const position = openPaperPosition(signal(), "W", "tx1", tokenStats(), 1000, 1, ladderConfig);
+    const closed: string[] = [];
+    bus.on("position.closed", ({ reason }) => closed.push(reason));
+
+    await manager.onPriceTick(position, position.entryPriceUsd * 1.25, 50000, position.openedAt + 1000);
+
+    expect(position.status).toBe("CLOSED");
+    expect(position.exitReason).toBe("TAKE_PROFIT");
+    expect(closed).toEqual(["TAKE_PROFIT"]);
+  });
+
   it("fires the first take-profit ladder rung when price crosses its trigger", async () => {
     const { manager, position } = setup();
     const targetPrice = position.entryPriceUsd * (1 + config.position.takeProfitLadder[0].triggerPct / 100 + 0.001);

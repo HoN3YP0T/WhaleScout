@@ -1,3 +1,4 @@
+import { createHash } from "node:crypto";
 import type { NormalizedTradeEvent } from "@whale-sniper/core";
 import type { Context, Logs } from "@solana/web3.js";
 import bs58 from "bs58";
@@ -10,7 +11,8 @@ const USER = "Vote111111111111111111111111111111111111111";
 
 function encodeFixtureLog(): string {
   const buf = Buffer.alloc(8 + 121);
-  buf.write("dscrmntr", 0, "utf-8");
+  // Anchor event discriminator: sha256("event:TradeEvent")[0..8].
+  createHash("sha256").update("event:TradeEvent").digest().copy(buf, 0, 0, 8);
   let offset = 8;
   Buffer.from(bs58.decode(MINT)).copy(buf, offset);
   offset += 32;

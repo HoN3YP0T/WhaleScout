@@ -155,6 +155,10 @@ export async function buildAppContext(): Promise<AppContext> {
   for (const entry of watchlist) {
     await repos.watchlist.add(entry);
   }
+  // Trade off the persisted watchlist, not just the config file: it also
+  // carries wallets approved/auto-promoted (or rejected) in earlier runs,
+  // which the config file knows nothing about.
+  const persistedWatchlist = await repos.watchlist.load();
 
   const scenarios = allScenarios();
   const tokenMetadataOverrides = scenarios.map((s) => ({ tokenMint: s.tokenMint, metadata: s.tokenMetadata }));
@@ -172,7 +176,7 @@ export async function buildAppContext(): Promise<AppContext> {
     config,
     repos,
     runtimeFlags,
-    watchlist,
+    watchlist: persistedWatchlist,
     tokenMetadataOverrides,
     tokenMetadataProvider,
     relationshipSource,
