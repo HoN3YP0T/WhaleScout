@@ -470,7 +470,13 @@ wallets from **history** instead:
    feed sees trades ~1.5-2s late, so a speed edge can't be followed), fewer
    than 3 distinct tokens, or having deployed a scanned token.
 
-It writes `config/discovered-whales.json`. With `--apply`, wallets that pass
+The report also shows how many wallets meet each gate condition on its own
+(a condition almost nobody meets is a threshold the market doesn't match)
+and the copyable wallets closest to qualifying. `--include-cache` scores
+every history cached by earlier runs as well, so repeated runs build up a
+larger universe.
+
+It writes `config/discovered-whales.json` (gitignored). With `--apply`, wallets that pass
 the gate and look copyable are added to `config/watchlist.json` as
 `"pending"` - not traded until approved with Telegram `/approve`.
 

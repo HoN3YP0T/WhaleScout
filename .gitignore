@@ -7,3 +7,4 @@ packages/db/generated/
 coverage/
 *.tsbuildinfo
 .cache/
+config/discovered-whales.json

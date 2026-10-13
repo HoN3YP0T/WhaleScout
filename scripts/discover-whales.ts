@@ -7,6 +7,7 @@
  *   npx tsx scripts/discover-whales.ts                       # report only
  *   npx tsx scripts/discover-whales.ts --feed-minutes 10 --min-ath 20000
  *   npx tsx scripts/discover-whales.ts --source api          # universe from pump.fun's coins API
+ *   npx tsx scripts/discover-whales.ts --include-cache       # also score every history cached by earlier runs
  *   npx tsx scripts/discover-whales.ts --apply               # add to watchlist as "pending"
  *
  * --apply adds wallets that pass the gate AND look copyable to
@@ -18,7 +19,7 @@
  * tokens (recent launches + recently traded tokens), not its full history.
  */
 
-import { existsSync, mkdirSync, readFileSync, statSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, readdirSync, readFileSync, statSync, writeFileSync } from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { createLogger, EventBus, loadEnvFile, parseStrategyConfig, resolveSolanaRpcEndpoint } from "@whale-sniper/core";
@@ -51,6 +52,10 @@ const concurrency = arg("--concurrency", 4);
 const apply = process.argv.includes("--apply");
 const cacheHours = arg("--cache-hours", 6);
 const cacheDir = path.join(REPO_ROOT, ".cache", "pump-trades");
+// Score over every history cached by earlier runs too, not just this run's
+// tokens - with pump.fun serving ~20 requests/minute, repeated runs are how
+// a universe large enough to show multi-week track records accumulates.
+const includeCache = process.argv.includes("--include-cache");
 const outPath = path.join(REPO_ROOT, "config", "discovered-whales.json");
 
 async function pool<T, R>(items: T[], size: number, fn: (item: T, i: number) => Promise<R>): Promise<R[]> {
@@ -161,6 +166,15 @@ async function main(): Promise<void> {
       }
     }
   });
+  if (includeCache) {
+    const fetched = new Set(histories.map((h) => h.mint));
+    for (const file of readdirSync(cacheDir)) {
+      const mint = file.replace(/\.json$/, "");
+      if (fetched.has(mint)) continue;
+      histories.push({ mint, ...(JSON.parse(readFileSync(path.join(cacheDir, file), "utf-8")) as { trades: HistoricalTrade[]; truncated: boolean }) });
+    }
+    console.log(`  + ${histories.length - fetched.size} token histories from earlier runs (--include-cache)`);
+  }
   // Coins-API metadata when we have it; otherwise derived from the history.
   const tokens = histories
     .map((h) => {
@@ -179,17 +193,39 @@ async function main(): Promise<void> {
   const result = scanHistoricalWallets(tokens, trades, { config });
   const passed = result.candidates.filter((c) => c.score.passedHardGate);
   const recommended = passed.filter((c) => c.copyable);
+  // Closest copyable wallets to qualifying: fewest failed gate conditions,
+  // then highest realized PnL.
   const nearMisses = result.candidates
-    .filter((c) => !c.score.passedHardGate && c.copyable && c.score.gateFailureReasons.length <= 2)
+    .filter((c) => !c.score.passedHardGate && c.copyable)
+    .sort((a, b) => a.score.gateFailureReasons.length - b.score.gateFailureReasons.length || b.stats.realizedPnlUsd - a.stats.realizedPnlUsd)
     .slice(0, 15);
 
   console.log(`\n${result.walletsSeen} wallets traded these tokens; ${result.candidates.length} closed at least one round trip; ${result.ruggedTokens} tokens rugged.`);
-  console.log(`${passed.length} pass the shipped hard gate; ${recommended.length} of those look copyable.\n`);
+  console.log(`${passed.length} pass the shipped hard gate; ${recommended.length} of those look copyable.`);
+  // Which conditions the population fails - the calibration view: a
+  // condition almost no wallet meets is a threshold the market doesn't match.
+  const g = config.walletGate;
+  const all = result.candidates;
+  const share = (pred: (c: WalletCandidate) => boolean) => `${all.filter(pred).length}/${all.length}`;
+  console.log("Wallets meeting each gate condition on its own:");
+  console.log({
+    [`tradeCount >= ${g.minTradeCount}`]: share((c) => c.stats.tradeCount >= g.minTradeCount),
+    [`winRate >= ${g.minWinRate}`]: share((c) => c.stats.winRate >= g.minWinRate),
+    [`realizedPnl >= $${g.minRealizedPnlUsd}`]: share((c) => c.stats.realizedPnlUsd >= g.minRealizedPnlUsd),
+    [`avgRoi >= ${g.minAvgRoiPct}%`]: share((c) => c.stats.avgRoiPct >= g.minAvgRoiPct),
+    [`avgBuy >= $${g.minWhaleBuySizeUsd}`]: share((c) => c.stats.avgWhaleBuySizeUsd >= g.minWhaleBuySizeUsd),
+    [`maxDrawdown <= ${g.maxDrawdownPct}%`]: share((c) => c.stats.maxDrawdownPct <= g.maxDrawdownPct),
+    [`earlyEntry >= ${g.minEarlyEntryFrequency}`]: share((c) => c.stats.earlyEntryFrequency >= g.minEarlyEntryFrequency),
+    [`rugExposure <= ${g.maxRugExposureCount}`]: share((c) => c.stats.rugExposureCount <= g.maxRugExposureCount),
+    [`whaleScore >= ${g.minWhaleScore}`]: share((c) => c.score.whaleScore >= g.minWhaleScore),
+    copyable: share((c) => c.copyable),
+  });
+  console.log("");
   console.log("=== Recommended (pass gate, copyable) ===");
   for (const c of recommended) console.log(row(c));
   console.log("\n=== Pass gate but NOT copyable ===");
   for (const c of passed.filter((c) => !c.copyable).slice(0, 15)) console.log(`${row(c)}\n    -> ${c.copyabilityIssues.join("; ")}`);
-  console.log("\n=== Near misses (copyable, fail <= 2 gate conditions) ===");
+  console.log("\n=== Closest to qualifying (copyable, fewest failed conditions) ===");
   for (const c of nearMisses) console.log(`${row(c)}\n    -> ${c.score.gateFailureReasons.join("; ")}`);
 
   const generatedAt = new Date().toISOString();
