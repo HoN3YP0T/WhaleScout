@@ -442,12 +442,24 @@ To try it: set `walletDiscovery.enabled: true` (and optionally
 `autoPromote: true`) in `config/strategy.json` and run `npm run start` - do
 not commit that change, the shipped default is off.
 
+### Wallet gate calibration
+
+`config/strategy.json`'s `walletGate` was calibrated against live pump.fun
+data (2026-10, SOL ~$107). The original bar - 15 round trips, $5k realized
+PnL, $2k average buy, 30% of buys within 2 minutes of launch, whale score
+60 - was met by no wallet among ~22k scanned: no wallet showed $5k realized
+PnL, only 8 averaged $2k buys, and "early" and "large" never coincide
+(large buyers trade graduated tokens nobody can be early on). The gate now
+requires 5 round trips, $250 realized PnL, 10% average ROI, $250 average
+buy (also the minimum live buy that triggers a signal), whale score 40, and
+no early-entry minimum - earliness still counts inside the whale score's
+timing component. Win rate, drawdown and rug-exposure limits are unchanged.
+
 ### Historical discovery (`npm run discover:whales`)
 
 Live discovery can only judge a wallet on trades it has watched since
-startup, and the shipped gate needs 15 round trips and $5k realized PnL - so
-in practice it never qualifies anyone. `scripts/discover-whales.ts` scores
-wallets from **history** instead:
+startup, which rarely amounts to a track record. `scripts/discover-whales.ts`
+scores wallets from **history** instead:
 
 1. Picks a token universe. By default it watches the live pump.fun feed
    for `--feed-minutes` (default 5) and takes the busiest tokens (at least

@@ -1,14 +1,14 @@
 {
   "walletGate": {
-    "minTradeCount": 15,
+    "minTradeCount": 5,
     "minWinRate": 0.45,
-    "minRealizedPnlUsd": 5000,
-    "minAvgRoiPct": 25,
-    "minWhaleBuySizeUsd": 2000,
+    "minRealizedPnlUsd": 250,
+    "minAvgRoiPct": 10,
+    "minWhaleBuySizeUsd": 250,
     "maxDrawdownPct": 60,
-    "minEarlyEntryFrequency": 0.3,
+    "minEarlyEntryFrequency": 0,
     "maxRugExposureCount": 3,
-    "minWhaleScore": 60
+    "minWhaleScore": 40
   },
   "walletScoreWeights": {
     "consistency": 0.25,
