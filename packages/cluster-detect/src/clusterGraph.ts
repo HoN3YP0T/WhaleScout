@@ -34,9 +34,15 @@ export function buildClusters(
     if (members.length < 2) continue;
     const memberSet = new Set(members);
     const clusterEdges = edges.filter((e) => memberSet.has(e.a) && memberSet.has(e.b));
+    const sortedMembers = [...members].sort();
     clusters.push({
-      clusterId: newId("cluster"),
-      members: [...members].sort(),
+      // Stable across re-detections (the token's cluster anchored at its
+      // lowest member address), so persisting a re-detected cluster
+      // overwrites it. A fresh random id per detection made the cluster
+      // repository grow on every whale buy - measured live at 155 rows and
+      // 65k stored edges within 4k trades.
+      clusterId: tokenMint ? `cluster_${tokenMint}_${sortedMembers[0]}` : newId("cluster"),
+      members: sortedMembers,
       edges: clusterEdges,
       tokenMint,
       flags: {

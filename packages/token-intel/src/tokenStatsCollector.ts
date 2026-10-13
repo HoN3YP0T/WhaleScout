@@ -32,6 +32,10 @@ const FIVE_MIN = 300;
 // A liquidity crash of this magnitude relative to the peak observed flags
 // the token as rugged for wallet-intel's rug-exposure counting.
 const RUG_LIQUIDITY_DROP_RATIO = 0.5;
+// Accumulators idle for longer than the stats window hold nothing but
+// expired trades (the window is only pruned on that token's next trade), so
+// they are evicted - see evictIdleTokens(). Checked once a minute of feed time.
+const IDLE_SWEEP_INTERVAL_SECONDS = 60;
 
 function newAccumulator(tokenMint: string): TokenAccumulator {
   return { tokenMint, trades: [], peakLiquidityUsd: 0, lastBlockTime: 0 };
@@ -45,6 +49,7 @@ function newAccumulator(tokenMint: string): TokenAccumulator {
  */
 export class TokenStatsCollector {
   private accumulators = new Map<string, TokenAccumulator>();
+  private lastSweepBlockTime = Number.NEGATIVE_INFINITY;
 
   constructor(
     private readonly bus: EventBus,
@@ -71,7 +76,25 @@ export class TokenStatsCollector {
     return this.buildStats(acc, acc.lastBlockTime);
   }
 
+  /** Test/diagnostic helper: how many tokens currently have accumulators. */
+  trackedTokenCount(): number {
+    return this.accumulators.size;
+  }
+
+  /** Evicts tokens with no trade in the last hour. Their rolling stats are
+   * all zero by then; the last persisted TokenStats stays in the repository,
+   * and a rug flag stays in RuggedTokenRegistry. The cost of eviction is that
+   * a token reviving after an hour of silence starts a fresh liquidity peak. */
+  private evictIdleTokens(nowBlockTime: number): void {
+    if (nowBlockTime - this.lastSweepBlockTime < IDLE_SWEEP_INTERVAL_SECONDS) return;
+    this.lastSweepBlockTime = nowBlockTime;
+    for (const [mint, acc] of this.accumulators) {
+      if (acc.lastBlockTime < nowBlockTime - ONE_HOUR) this.accumulators.delete(mint);
+    }
+  }
+
   private async handle(event: NormalizedTradeEvent): Promise<void> {
+    this.evictIdleTokens(event.blockTime);
     let acc = this.accumulators.get(event.tokenMint);
     if (!acc) {
       acc = newAccumulator(event.tokenMint);

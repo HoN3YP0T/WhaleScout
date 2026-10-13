@@ -73,10 +73,22 @@ export class InMemoryTradeRepository implements ITradeRepository {
   }
 }
 
+/** Clusters are an audit trail - nothing in the pipeline reads them back -
+ * and a live feed produces new ones for every busy token, each carrying
+ * every pairwise edge. Keep the most recently written ones only. */
+const MAX_IN_MEMORY_CLUSTERS = 1_000;
+
 export class InMemoryClusterRepository implements IClusterRepository {
   private clusters = new Map<string, WalletCluster>();
+  constructor(private readonly capacity: number = MAX_IN_MEMORY_CLUSTERS) {}
   async upsertCluster(cluster: WalletCluster): Promise<void> {
+    // Delete first so a re-written cluster moves to the newest position.
+    this.clusters.delete(cluster.clusterId);
     this.clusters.set(cluster.clusterId, cluster);
+    if (this.clusters.size > this.capacity) {
+      const oldest = this.clusters.keys().next().value as string;
+      this.clusters.delete(oldest);
+    }
   }
   async getCluster(clusterId: string): Promise<WalletCluster | undefined> {
     return this.clusters.get(clusterId);

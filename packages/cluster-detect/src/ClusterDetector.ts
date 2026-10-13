@@ -9,8 +9,22 @@ import type { WalletRelationshipSource } from "./walletRelationshipSource.js";
  * the signal engine's cluster-check stage), builds the wallet relationship
  * graph for that token and merges it into clusters with manipulation
  * flags. */
+/** How much per-token trade history is kept. Every detector here looks at
+ * seconds-scale windows (timing correlation 15s, immediate selling 30s) or
+ * the token's recent buy volume; an hour covers all of them, and without a
+ * bound a live pump.fun feed (~4M trades/day) exhausts memory. */
+const TRADE_RETENTION_SECONDS = 60 * 60;
+/** How often (in feed time) to evict tokens that have stopped trading. */
+const IDLE_SWEEP_INTERVAL_SECONDS = 60;
+/** Edges kept when persisting a cluster (strongest first). On a busy
+ * pump.fun token the timing-correlation graph is near-complete - ~1k edges
+ * per cluster measured live - which is noise in an audit trail and was the
+ * bulk of the repository's memory. Callers still get every edge. */
+const MAX_PERSISTED_EDGES = 100;
+
 export class ClusterDetector {
   private tradesByToken = new Map<string, NormalizedTradeEvent[]>();
+  private lastSweepBlockTime = Number.NEGATIVE_INFINITY;
 
   constructor(
     private readonly bus: EventBus,
@@ -23,10 +37,30 @@ export class ClusterDetector {
 
   start(): () => void {
     return this.bus.on("trade.normalized", (event) => {
-      const arr = this.tradesByToken.get(event.tokenMint) ?? [];
+      const cutoff = event.blockTime - TRADE_RETENTION_SECONDS;
+      let arr = this.tradesByToken.get(event.tokenMint) ?? [];
+      if (arr.length > 0 && arr[0].blockTime < cutoff) arr = arr.filter((t) => t.blockTime >= cutoff);
       arr.push(event);
       this.tradesByToken.set(event.tokenMint, arr);
+      this.evictIdleTokens(event.blockTime);
     });
+  }
+
+  /** Drops tokens with no trade inside the retention window - most
+   * pump.fun tokens stop trading within minutes and would otherwise be kept
+   * forever, since the per-token prune above only runs on a new trade. */
+  private evictIdleTokens(nowBlockTime: number): void {
+    if (nowBlockTime - this.lastSweepBlockTime < IDLE_SWEEP_INTERVAL_SECONDS) return;
+    this.lastSweepBlockTime = nowBlockTime;
+    const cutoff = nowBlockTime - TRADE_RETENTION_SECONDS;
+    for (const [mint, trades] of this.tradesByToken) {
+      if (trades[trades.length - 1].blockTime < cutoff) this.tradesByToken.delete(mint);
+    }
+  }
+
+  /** Test/diagnostic helper: how many tokens currently have buffered trades. */
+  trackedTokenCount(): number {
+    return this.tradesByToken.size;
   }
 
   async detectForToken(tokenMint: string): Promise<WalletCluster[]> {
@@ -57,7 +91,9 @@ export class ClusterDetector {
       });
       const full: WalletCluster = { ...cluster, flags, manipulationPenalty };
       evaluated.push(full);
-      await this.clusterRepo.upsertCluster(full);
+      const persistedEdges =
+        full.edges.length > MAX_PERSISTED_EDGES ? [...full.edges].sort((a, b) => b.weight - a.weight).slice(0, MAX_PERSISTED_EDGES) : full.edges;
+      await this.clusterRepo.upsertCluster({ ...full, edges: persistedEdges });
       this.bus.emit("cluster.detected", { clusterId: full.clusterId, members: full.members });
     }
     return evaluated;

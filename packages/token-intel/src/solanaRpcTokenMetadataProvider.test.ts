@@ -1,6 +1,7 @@
 import { describe, expect, it, vi } from "vitest";
 import {
   CompositeTokenMetadataProvider,
+  pumpFunBondingCurveTokenAccounts,
   top10ConcentrationFrom,
   type ParsedMintAccountInfo,
   type SolanaRpcLike,
@@ -139,6 +140,29 @@ describe("CompositeTokenMetadataProvider", () => {
     expect(seed.top10HolderPct).toBeCloseTo(0.15, 6);
     expect(seed.mintAuthorityRevoked).toBe(true);
     expect(seed.freezeAuthorityRevoked).toBe(true);
+  });
+
+  it("excludes a pump.fun mint's bonding-curve account from holder concentration", async () => {
+    // A real pump.fun mint; its curve's token account (Token-2022) was
+    // measured live holding 99.9% of supply.
+    const pumpMint = "GUDj8gaa3Mw7Jv4dE2k3h1q8aMwRrdX794CwATVopump";
+    const curveAccounts = [...pumpFunBondingCurveTokenAccounts(pumpMint)];
+    expect(curveAccounts.some((a) => a.startsWith("BRVdWw"))).toBe(true);
+
+    const rpc = fakeRpc({
+      largest: [
+        { address: curveAccounts[1], amount: "900" },
+        { address: "Holder1", amount: "60" },
+        { address: "Holder2", amount: "40" },
+      ],
+      supply: { amount: "1000" },
+    });
+    const provider = build(rpc, fakeDexScreener({}), () => 0);
+    await provider.prefetch(pumpMint);
+
+    const seed = provider.get(pumpMint);
+    expect(seed.top10HolderPct).toBeCloseTo(0.1, 6);
+    expect(seed.holderCount).toBe(2);
   });
 
   it("reads a null authority as revoked and a non-null one as live", async () => {

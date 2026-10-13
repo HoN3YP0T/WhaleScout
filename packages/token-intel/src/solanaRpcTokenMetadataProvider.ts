@@ -133,6 +133,39 @@ export class Web3SolanaRpcClient implements SolanaRpcLike {
   }
 }
 
+const PUMP_FUN_PROGRAM_ID = new PublicKey("6EF8rrecthR5Dkzon8Nwu78hRvfCKubJ14M5uBEwF6P");
+const ASSOCIATED_TOKEN_PROGRAM_ID = new PublicKey("ATokenGPvbdGVxr1b2hvZbsiqW5xWH25efTNsLJA8knL");
+const TOKEN_PROGRAM_IDS = [
+  new PublicKey("TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA"),
+  new PublicKey("TokenzQdBNbLqP5VEhdkAS6EPFLC1PHnBqCXEpPxuEb"), // Token-2022 (current pump.fun mints)
+];
+
+/**
+ * Token accounts that hold a pump.fun mint's unsold supply - the bonding
+ * curve's associated token account, under either token program. Not a
+ * holder in any meaningful sense: it IS the market, and measured live it
+ * holds 38-99.9% of supply while a token is on the curve. Counting it would
+ * pin top-10 concentration near 1.0 for every pump.fun token (maxing
+ * concentrationRisk and tripping cluster-detect's concentratedOwnership
+ * flag). For a non-pump.fun mint these derive to unused addresses, so
+ * excluding them is a no-op.
+ */
+export function pumpFunBondingCurveTokenAccounts(mint: string): Set<string> {
+  let mintKey: PublicKey;
+  try {
+    mintKey = new PublicKey(mint);
+  } catch {
+    return new Set();
+  }
+  const [curve] = PublicKey.findProgramAddressSync([Buffer.from("bonding-curve"), mintKey.toBuffer()], PUMP_FUN_PROGRAM_ID);
+  return new Set(
+    TOKEN_PROGRAM_IDS.map(
+      (tokenProgram) =>
+        PublicKey.findProgramAddressSync([curve.toBuffer(), tokenProgram.toBuffer(), mintKey.toBuffer()], ASSOCIATED_TOKEN_PROGRAM_ID)[0].toBase58(),
+    ),
+  );
+}
+
 function parseRawAmount(amount: string | undefined): bigint | undefined {
   if (amount === undefined || amount === "") return undefined;
   if (!/^\d+$/.test(amount)) return undefined;
@@ -333,7 +366,9 @@ export class CompositeTokenMetadataProvider implements ITokenMetadataProvider {
         this.rpc.getTokenSupply(tokenMint),
       ]);
 
-      const concentration = top10ConcentrationFrom(largest ?? [], supply?.amount);
+      const curveAccounts = pumpFunBondingCurveTokenAccounts(tokenMint);
+      const holders = (largest ?? []).filter((a) => a.address === undefined || !curveAccounts.has(a.address));
+      const concentration = top10ConcentrationFrom(holders, supply?.amount);
       if (mintAccount === undefined || concentration === undefined) {
         // Not a parseable mint, or no usable supply/balances - leave the
         // cache alone so get() keeps serving the conservative fallback
@@ -344,7 +379,7 @@ export class CompositeTokenMetadataProvider implements ITokenMetadataProvider {
       const fallback = conservativeUnknownSeed();
       this.cache.set(tokenMint, {
         facts: {
-          holderCount: holderCountFrom(largest ?? []),
+          holderCount: holderCountFrom(holders),
           top10HolderPct: concentration,
           // null authority = revoked, which is the *safe* end of
           // authorityRiskComponent. `undefined` (field absent from a

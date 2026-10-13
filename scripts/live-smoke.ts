@@ -113,7 +113,11 @@ async function main(): Promise<void> {
 
   const progress = setInterval(() => {
     const m = built.metrics.snapshot();
-    console.log(`  trades=${trades.length} promoted=${promoted} signals=${m.signalsGenerated} opened=${m.openPositions + m.closedPositions} closed=${m.closedPositions}`);
+    const mem = process.memoryUsage();
+    console.log(
+      `  trades=${trades.length} promoted=${promoted} signals=${m.signalsGenerated} opened=${m.openPositions + m.closedPositions} ` +
+        `closed=${m.closedPositions} heapMb=${Math.round(mem.heapUsed / 1e6)} rssMb=${Math.round(mem.rss / 1e6)}`,
+    );
   }, 30_000);
   await new Promise((r) => setTimeout(r, minutes * 60_000));
   clearInterval(progress);
@@ -159,7 +163,7 @@ async function main(): Promise<void> {
     );
   }
   console.log("\n=== Health ===");
-  console.log({ listenerErrors: listenerErrors.length, rssMb: Math.round(process.memoryUsage().rss / 1e6), stageLatencyP50Ms: Object.fromEntries(Object.entries(m.latencyMsByStage).map(([k, v]) => [k, v.p50])) });
+  console.log({ listenerErrors: listenerErrors.length, rssMb: Math.round(process.memoryUsage().rss / 1e6), heapMb: Math.round(process.memoryUsage().heapUsed / 1e6), stageLatencyP50Ms: Object.fromEntries(Object.entries(m.latencyMsByStage).map(([k, v]) => [k, v.p50])) });
   for (const e of listenerErrors.slice(0, 5)) console.log("  listener error:", e);
   process.exit(listenerErrors.length > 0 ? 1 : 0);
 }
