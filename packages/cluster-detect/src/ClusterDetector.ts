@@ -1,14 +1,10 @@
 import type { EventBus, NormalizedTradeEvent, RuggedTokenRegistry, StrategyConfig, WalletCluster } from "@whale-sniper/core";
 import type { IClusterRepository, ITokenRepository } from "@whale-sniper/db";
 import { buildClusters } from "./clusterGraph.js";
-import { repeatedCoBuyEdges, timingCorrelationEdges } from "./edgeDetectors.js";
+import { repeatedCoBuyEdges, TIMING_CORRELATION_WINDOW_SECONDS, timingCorrelationEdges } from "./edgeDetectors.js";
 import { evaluateClusterFlags } from "./flagEvaluator.js";
 import type { WalletRelationshipSource } from "./walletRelationshipSource.js";
 
-/** Buffers trades per token from the live stream and, on demand (called at
- * the signal engine's cluster-check stage), builds the wallet relationship
- * graph for that token and merges it into clusters with manipulation
- * flags. */
 /** How much per-token trade history is kept. Every detector here looks at
  * seconds-scale windows (timing correlation 15s, immediate selling 30s) or
  * the token's recent buy volume; an hour covers all of them, and without a
@@ -22,9 +18,20 @@ const IDLE_SWEEP_INTERVAL_SECONDS = 60;
  * bulk of the repository's memory. Callers still get every edge. */
 const MAX_PERSISTED_EDGES = 100;
 
+function pairKey(a: string, b: string): string {
+  return a < b ? `${a}|${b}` : `${b}|${a}`;
+}
+
+/** Buffers trades per token from the live stream and, on demand (called at
+ * the signal engine's cluster-check stage), builds the wallet relationship
+ * graph for that token and merges it into clusters with manipulation
+ * flags. */
 export class ClusterDetector {
   private tradesByToken = new Map<string, NormalizedTradeEvent[]>();
   private lastSweepBlockTime = Number.NEGATIVE_INFINITY;
+  /** pair -> tokens it co-bought within the timing window -> last co-buy
+   * time. Only maintained when minCoordinatedTokens > 1. */
+  private coBuyTokensByPair = new Map<string, Map<string, number>>();
 
   constructor(
     private readonly bus: EventBus,
@@ -40,6 +47,7 @@ export class ClusterDetector {
       const cutoff = event.blockTime - TRADE_RETENTION_SECONDS;
       let arr = this.tradesByToken.get(event.tokenMint) ?? [];
       if (arr.length > 0 && arr[0].blockTime < cutoff) arr = arr.filter((t) => t.blockTime >= cutoff);
+      if (event.side === "BUY" && this.minCoordinatedTokens() > 1) this.recordCoBuys(arr, event);
       arr.push(event);
       this.tradesByToken.set(event.tokenMint, arr);
       this.evictIdleTokens(event.blockTime);
@@ -56,6 +64,29 @@ export class ClusterDetector {
     for (const [mint, trades] of this.tradesByToken) {
       if (trades[trades.length - 1].blockTime < cutoff) this.tradesByToken.delete(mint);
     }
+    for (const [pair, tokens] of this.coBuyTokensByPair) {
+      for (const [mint, at] of tokens) if (at < cutoff) tokens.delete(mint);
+      if (tokens.size === 0) this.coBuyTokensByPair.delete(pair);
+    }
+  }
+
+  private minCoordinatedTokens(): number {
+    return this.config.clusterThresholds.minCoordinatedTokens ?? 1;
+  }
+
+  /** Pairs this buy with every other wallet's buy on the same token in the
+   * preceding timing window (trades are appended in time order, so a
+   * backwards scan stops at the window edge). */
+  private recordCoBuys(priorTrades: NormalizedTradeEvent[], event: NormalizedTradeEvent): void {
+    for (let i = priorTrades.length - 1; i >= 0; i -= 1) {
+      const t = priorTrades[i];
+      if (event.blockTime - t.blockTime > TIMING_CORRELATION_WINDOW_SECONDS) break;
+      if (t.side !== "BUY" || t.wallet === event.wallet) continue;
+      const key = pairKey(t.wallet, event.wallet);
+      let tokens = this.coBuyTokensByPair.get(key);
+      if (!tokens) this.coBuyTokensByPair.set(key, (tokens = new Map()));
+      tokens.set(event.tokenMint, event.blockTime);
+    }
   }
 
   /** Test/diagnostic helper: how many tokens currently have buffered trades. */
@@ -68,8 +99,12 @@ export class ClusterDetector {
     if (trades.length === 0) return [];
 
     const wallets = [...new Set(trades.map((t) => t.wallet))];
+    const minTokens = this.minCoordinatedTokens();
+    const timingEdges = timingCorrelationEdges(trades).filter(
+      (e) => minTokens <= 1 || (this.coBuyTokensByPair.get(pairKey(e.a, e.b))?.size ?? 0) >= minTokens,
+    );
     const edges = [
-      ...timingCorrelationEdges(trades),
+      ...timingEdges,
       ...repeatedCoBuyEdges(this.buildCoBuyGrouping(wallets, tokenMint)),
       ...this.relationshipSource.commonFunderEdges(wallets),
       ...this.relationshipSource.sharedCreatorEdges(tokenMint, wallets),

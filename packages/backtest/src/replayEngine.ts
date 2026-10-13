@@ -2,6 +2,7 @@ import { EventBus, RuntimeFlags, SimulatedClock, type Position, type RawFeedEven
 import { createInMemoryRepositories, type Repositories, type WatchlistEntry } from "@whale-sniper/db";
 import { decodeTradeEvent, type ScenarioTokenMetadata } from "@whale-sniper/feed";
 import { buildOrchestrator } from "@whale-sniper/orchestrator";
+import type { ITokenMetadataProvider } from "@whale-sniper/token-intel";
 import type { MetricsSnapshot } from "@whale-sniper/monitoring";
 
 export interface ReplayOptions {
@@ -14,6 +15,12 @@ export interface ReplayOptions {
    * settle before the next event is allowed to advance the clock -
    * preserving strict in-order, no-lookahead processing. */
   settleRoundsPerEvent?: number;
+  /** Real token-data source for the replay (defaults to the mock, seeded
+   * from `tokenMetadataOverrides`). */
+  tokenMetadataProvider?: ITokenMetadataProvider;
+  /** Called with the replay's bus before any event is emitted, so callers
+   * can observe rejections, promotions, exits, etc. */
+  observe?: (bus: EventBus) => void;
 }
 
 export interface ReplayResult {
@@ -23,9 +30,12 @@ export interface ReplayResult {
   repos: Repositories;
 }
 
+// setImmediate runs after the microtask queue drains - which is all the
+// pipeline's in-memory async chain needs - without setTimeout(0)'s ~1ms
+// floor, which made a 100k-event replay take minutes per round.
 async function flush(rounds: number): Promise<void> {
   for (let i = 0; i < rounds; i++) {
-    await new Promise((resolve) => setTimeout(resolve, 0));
+    await new Promise((resolve) => setImmediate(resolve));
   }
 }
 
@@ -53,7 +63,9 @@ export async function runReplay(events: RawFeedEvent[], options: ReplayOptions):
     runtimeFlags,
     watchlist: options.watchlist,
     tokenMetadataOverrides: options.tokenMetadataOverrides,
+    tokenMetadataProvider: options.tokenMetadataProvider,
   });
+  options.observe?.(bus);
   built.orchestrator.start();
 
   const settleRounds = options.settleRoundsPerEvent ?? 5;

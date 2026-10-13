@@ -24,6 +24,8 @@ export interface RiskVeto {
  * entryGate as `riskEngineVeto` so a single EntryGateResult carries every
  * failure reason.
  */
+const DAY_MS = 24 * 60 * 60 * 1000;
+
 export class RiskEngine {
   /** Tail of queued recordTradeResult() calls - see there. */
   private resultQueue: Promise<void> = Promise.resolve();
@@ -47,11 +49,11 @@ export class RiskEngine {
     if (state.cooldownUntil && this.now() < state.cooldownUntil) {
       return { vetoed: true, reason: `cooldown active until ${new Date(state.cooldownUntil).toISOString()}` };
     }
-    if (state.consecutiveLosses >= r.maxConsecutiveLosses) {
-      return { vetoed: true, reason: `consecutive losses ${state.consecutiveLosses} >= max ${r.maxConsecutiveLosses}` };
-    }
-    if (state.dailyLossUsd >= r.maxDailyLossUsd) {
-      return { vetoed: true, reason: `daily loss $${state.dailyLossUsd.toFixed(0)} >= max $${r.maxDailyLossUsd}` };
+    // The window has to roll over here too: the reset in applyTradeResult()
+    // only runs after a trade, and once this limit trips there are none.
+    const dailyLossUsd = this.now() - state.dailyLossResetAt > DAY_MS ? 0 : state.dailyLossUsd;
+    if (dailyLossUsd >= r.maxDailyLossUsd) {
+      return { vetoed: true, reason: `daily loss $${dailyLossUsd.toFixed(0)} >= max $${r.maxDailyLossUsd}` };
     }
     if (input.tradeSizeUsd > r.maxTradeSizeUsd) {
       return { vetoed: true, reason: `trade size $${input.tradeSizeUsd} > max $${r.maxTradeSizeUsd}` };
@@ -92,11 +94,17 @@ export class RiskEngine {
     const state = await this.repo.get();
     const now = this.now();
 
-    const dayMs = 24 * 60 * 60 * 1000;
-    const resetDaily = now - state.dailyLossResetAt > dayMs;
+    const resetDaily = now - state.dailyLossResetAt > DAY_MS;
     const dailyLossUsd = (resetDaily ? 0 : state.dailyLossUsd) + Math.max(0, -pnlUsd);
-    const consecutiveLosses = pnlUsd < 0 ? state.consecutiveLosses + 1 : 0;
-    const cooldownUntil = pnlUsd < 0 ? now + config.risk.cooldownSecondsAfterLoss * 1000 : state.cooldownUntil;
+    let consecutiveLosses = pnlUsd < 0 ? state.consecutiveLosses + 1 : 0;
+    let cooldownUntil = pnlUsd < 0 ? now + config.risk.cooldownSecondsAfterLoss * 1000 : state.cooldownUntil;
+    if (consecutiveLosses >= config.risk.maxConsecutiveLosses) {
+      // Circuit breaker: pause, then start counting afresh. Leaving the
+      // streak at the max would veto every trade, and only a winning trade
+      // could ever clear it.
+      cooldownUntil = Math.max(cooldownUntil ?? 0, now + (config.risk.consecutiveLossPauseSeconds ?? 3600) * 1000);
+      consecutiveLosses = 0;
+    }
 
     await this.repo.update({
       dailyLossUsd,

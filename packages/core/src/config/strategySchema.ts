@@ -37,7 +37,7 @@ export const tokenRiskWeightsSchema = z.object({
   creatorRisk: z.number(),
 });
 
-export const dexNameSchema = z.enum(["raydium", "orca", "pumpfun", "meteora", "jupiter", "unknown"]);
+export const dexNameSchema = z.enum(["raydium", "orca", "pumpfun", "pumpswap", "meteora", "jupiter", "unknown"]);
 
 export const tokenThresholdsSchema = z.object({
   maxTokenRiskScore: z.number().min(0).max(100),
@@ -59,6 +59,14 @@ export const tokenThresholdsSchema = z.object({
 export const clusterThresholdsSchema = z.object({
   edgeMergeThreshold: z.number().min(0).max(1),
   manipulationPenaltyCap: z.number().min(0).max(100),
+  // A timing-correlation edge (two wallets buying the same token within
+  // 15s) only counts once the same pair has co-bought that way on at least
+  // this many distinct tokens. 1 = any single co-buy counts (original
+  // behaviour). On pump.fun, block times have 1s resolution and busy tokens
+  // see several buys per second, so at 1 nearly every active buyer is
+  // "coordinated" with every other; a pair repeating across tokens is the
+  // actual tell.
+  minCoordinatedTokens: z.number().int().min(1).default(1),
 });
 
 export const signalWeightsSchema = z.object({
@@ -117,6 +125,10 @@ export const riskSchema = z.object({
   maxTxCostUsd: z.number().positive(),
   maxConsecutiveLosses: z.number().int().positive(),
   cooldownSecondsAfterLoss: z.number().nonnegative(),
+  // Pause after maxConsecutiveLosses losses in a row; the streak then
+  // resets. (Previously the streak could only reset on a win, which can't
+  // happen while every trade is vetoed - a permanent halt.)
+  consecutiveLossPauseSeconds: z.number().nonnegative().default(3600),
 });
 
 export const executionSchema = z.object({

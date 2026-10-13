@@ -139,6 +139,42 @@ describe("RiskEngine.recordTradeResult", () => {
   });
 });
 
+describe("RiskEngine circuit breakers recover", () => {
+  const input = {
+    tradeSizeUsd: 100,
+    tokenMint: "T",
+    estimatedSlippagePct: 1,
+    estimatedTxCostUsd: 1,
+    openPositionsCount: 0,
+    totalExposureUsd: 0,
+    perTokenExposureUsd: 0,
+    perClusterExposureUsd: 0,
+  };
+
+  it("pauses after max consecutive losses, then trades again without needing a win", async () => {
+    let now = 1_000_000_000;
+    const repo = new InMemoryRiskStateRepository();
+    const engine = new RiskEngine(repo, new RuntimeFlags(), () => now);
+    for (let i = 0; i < config.risk.maxConsecutiveLosses; i++) await engine.recordTradeResult(-10, config);
+
+    expect((await engine.evaluate(input, config)).vetoed).toBe(true);
+    now += config.risk.consecutiveLossPauseSeconds * 1000 + 1;
+    expect((await engine.evaluate(input, config)).vetoed).toBe(false);
+    expect((await repo.get()).consecutiveLosses).toBe(0);
+  });
+
+  it("lets the daily loss limit expire after 24h even though no trade has closed since", async () => {
+    let now = Date.now();
+    const repo = new InMemoryRiskStateRepository();
+    await repo.update({ dailyLossUsd: config.risk.maxDailyLossUsd, dailyLossResetAt: now });
+    const engine = new RiskEngine(repo, new RuntimeFlags(), () => now);
+
+    expect((await engine.evaluate(input, config)).reason).toMatch(/daily loss/);
+    now += 24 * 60 * 60 * 1000 + 1;
+    expect((await engine.evaluate(input, config)).vetoed).toBe(false);
+  });
+});
+
 describe("EventBus sanity for execution", () => {
   it("delivers emitted events to subscribers", () => {
     const bus = new EventBus();

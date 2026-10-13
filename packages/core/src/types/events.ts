@@ -4,6 +4,8 @@ export type DexName =
   | "raydium"
   | "orca"
   | "pumpfun"
+  // pump.fun's own AMM, where tokens trade after graduating the curve.
+  | "pumpswap"
   | "meteora"
   | "jupiter"
   | "unknown";

@@ -96,3 +96,36 @@ describe("live-feed memory bounds", () => {
     expect(await repo.getCluster("c3")).toBeDefined();
   });
 });
+
+describe("minCoordinatedTokens", () => {
+  const buy = (tokenMint: string, blockTime: number, wallet: string) => ({ ...trade(tokenMint, blockTime, wallet), side: "BUY" as const });
+
+  it("ignores a one-off same-second co-buy, but clusters a pair that co-buys across tokens", async () => {
+    const cfg = structuredClone(config);
+    cfg.clusterThresholds.minCoordinatedTokens = 2;
+    const bus = new EventBus();
+    const detector = new ClusterDetector(bus, new InMemoryClusterRepository(), new InMemoryTokenRepository(), new MockWalletRelationshipSource(), new RuggedTokenRegistry(), cfg);
+    detector.start();
+
+    // A and B co-buy token X in the same second: on its own, just a busy token.
+    bus.emit("trade.normalized", buy("X", 1_000, "A"));
+    bus.emit("trade.normalized", buy("X", 1_000, "B"));
+    expect(await detector.detectForToken("X")).toEqual([]);
+
+    // The same pair co-buys a second token: now it's a pattern.
+    bus.emit("trade.normalized", buy("Y", 1_100, "A"));
+    bus.emit("trade.normalized", buy("Y", 1_102, "B"));
+    const clusters = await detector.detectForToken("Y");
+    expect(clusters).toHaveLength(1);
+    expect(clusters[0].members).toEqual(["A", "B"]);
+  });
+
+  it("defaults to the original behaviour (any single co-buy counts)", async () => {
+    const bus = new EventBus();
+    const detector = new ClusterDetector(bus, new InMemoryClusterRepository(), new InMemoryTokenRepository(), new MockWalletRelationshipSource(), new RuggedTokenRegistry(), config);
+    detector.start();
+    bus.emit("trade.normalized", buy("X", 1_000, "A"));
+    bus.emit("trade.normalized", buy("X", 1_000, "B"));
+    expect(await detector.detectForToken("X")).toHaveLength(1);
+  });
+});

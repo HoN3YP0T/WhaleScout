@@ -10,6 +10,7 @@
     "@whale-sniper/db": "*",
     "@whale-sniper/feed": "*",
     "@whale-sniper/monitoring": "*",
-    "@whale-sniper/orchestrator": "*"
+    "@whale-sniper/orchestrator": "*",
+    "@whale-sniper/token-intel": "*"
   }
 }

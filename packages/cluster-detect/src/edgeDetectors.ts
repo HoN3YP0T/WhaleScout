@@ -1,6 +1,6 @@
 import type { ClusterEdge, NormalizedTradeEvent } from "@whale-sniper/core";
 
-const TIMING_CORRELATION_WINDOW_SECONDS = 15;
+export const TIMING_CORRELATION_WINDOW_SECONDS = 15;
 const CO_BUY_MIN_SHARED_TOKENS = 2;
 
 /** Wallets whose BUYs on the same token land within a tight time window -

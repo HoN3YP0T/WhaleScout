@@ -12,6 +12,8 @@ export interface DecodableTradePayload {
   priceUsd: number;
   dex: DexName;
   pool: string;
+  /** See NormalizedTradeEvent.poolLiquidityUsd. */
+  poolLiquidityUsd?: number;
 }
 
 export function decodeTradeEvent(raw: RawFeedEvent, nowFn: () => number = Date.now): NormalizedTradeEvent {
@@ -30,6 +32,7 @@ export function decodeTradeEvent(raw: RawFeedEvent, nowFn: () => number = Date.n
     slot: raw.slot,
     blockTime: raw.blockTime,
     txSignature: raw.txSignature,
+    poolLiquidityUsd: payload.poolLiquidityUsd,
     timestamps: {
       rawReceivedAt: raw.receivedAt,
       decodedAt,

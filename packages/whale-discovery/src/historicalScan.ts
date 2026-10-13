@@ -77,10 +77,12 @@ const DEFAULT_RUG_PRICE_DROP_RATIO = 0.25;
 const DEFAULT_MIN_COPYABLE_HOLD_SECONDS = 30;
 const DEFAULT_MIN_DISTINCT_TOKENS = 3;
 
-function venueToDex(venue: string): DexName {
-  // pump.fun's own AMM (post-graduation) has no DexName of its own; nothing
-  // in wallet stats depends on the venue.
-  return venue === "pump" ? "pumpfun" : "unknown";
+export function venueToDex(venue: string): DexName {
+  if (venue === "pump") return "pumpfun";
+  if (venue === "pump_amm") return "pumpswap";
+  if (venue.startsWith("raydium")) return "raydium";
+  if (venue.startsWith("meteora")) return "meteora";
+  return "unknown";
 }
 
 function median(values: number[]): number | undefined {
