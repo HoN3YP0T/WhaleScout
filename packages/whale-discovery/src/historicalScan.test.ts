@@ -154,4 +154,21 @@ describe("pump.fun API parsing", () => {
     expect(partial.createdAtSec).toBe(0);
     expect(partial.creator).toBeUndefined();
   });
+
+  it("keeps the coins it already listed when the coins API starts throttling", async () => {
+    const coin = (mint: string) => ({ mint, created_timestamp: 1_000_000, ath_market_cap: 50_000 });
+    const client = new PumpFunHistoryClient(async (url) => {
+      const u = new URL(url);
+      if (u.searchParams.get("sort") === "created_timestamp") throw new Error("429 from frontend-api-v3.pump.fun/coins");
+      if (u.searchParams.get("offset") === "0") return [coin("A"), coin("B")];
+      throw new Error("429 from frontend-api-v3.pump.fun/coins");
+    });
+    const universe = await client.fetchUniverse({ recentLaunches: true, recentlyTraded: true, minAthMarketCapUsd: 10_000, maxTokens: 10 });
+    expect(universe.map((t) => t.mint).sort()).toEqual(["A", "B"]);
+
+    const dead = new PumpFunHistoryClient(async () => {
+      throw new Error("429");
+    });
+    await expect(dead.fetchUniverse({ recentLaunches: true, recentlyTraded: true, minAthMarketCapUsd: 0, maxTokens: 10 })).rejects.toThrow("429");
+  });
 });

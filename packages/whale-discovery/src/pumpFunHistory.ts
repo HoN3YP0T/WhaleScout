@@ -171,12 +171,19 @@ export interface UniverseOptions {
 export class PumpFunHistoryClient {
   constructor(private readonly fetchJson: FetchJson = defaultFetchJson) {}
 
+  /** Pages through one sort order. A failure after some pages have
+   * arrived returns what was collected: a throttled coins API (it throttles
+   * hard after bursts) should shrink the universe, not abort the scan. */
   private async listCoins(sort: string): Promise<HistoricalToken[]> {
     const out: HistoricalToken[] = [];
     for (let offset = 0; offset < MAX_COINS_OFFSET; offset += COINS_PAGE_SIZE) {
-      const page = await this.fetchJson(
-        `${COINS_URL}?offset=${offset}&limit=${COINS_PAGE_SIZE}&sort=${sort}&order=DESC&includeNsfw=true`,
-      );
+      let page: unknown;
+      try {
+        page = await this.fetchJson(`${COINS_URL}?offset=${offset}&limit=${COINS_PAGE_SIZE}&sort=${sort}&order=DESC&includeNsfw=true`);
+      } catch (err) {
+        if (out.length === 0) throw err;
+        break;
+      }
       if (!Array.isArray(page) || page.length === 0) break;
       for (const raw of page as RawCoin[]) {
         const coin = parseCoin(raw);
@@ -195,11 +202,17 @@ export class PumpFunHistoryClient {
       ...(options.recentLaunches ? ["created_timestamp"] : []),
       ...(options.recentlyTraded ? ["last_trade_timestamp"] : []),
     ];
+    let lastError: unknown;
     for (const sort of sources) {
-      for (const coin of await this.listCoins(sort)) {
-        if (coin.athMarketCapUsd >= options.minAthMarketCapUsd) byMint.set(coin.mint, coin);
+      try {
+        for (const coin of await this.listCoins(sort)) {
+          if (coin.athMarketCapUsd >= options.minAthMarketCapUsd) byMint.set(coin.mint, coin);
+        }
+      } catch (err) {
+        lastError = err; // one sort order failing still leaves the other
       }
     }
+    if (byMint.size === 0 && lastError !== undefined) throw lastError;
     return [...byMint.values()].sort((a, b) => b.athMarketCapUsd - a.athMarketCapUsd).slice(0, options.maxTokens);
   }
 
