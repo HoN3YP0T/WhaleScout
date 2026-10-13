@@ -22,7 +22,9 @@
     "db:migrate": "prisma migrate dev --name init --schema packages/db/prisma/schema.prisma",
     "verify:feed": "tsx scripts/verify-feed.ts",
     "smoke:live": "tsx scripts/live-smoke.ts",
-    "discover:whales": "tsx scripts/discover-whales.ts"
+    "discover:whales": "tsx scripts/discover-whales.ts",
+    "record:feed": "tsx scripts/record-feed.ts",
+    "backtest:real": "tsx scripts/backtest-pumpfun.ts"
   },
   "devDependencies": {
     "@types/node": "^22.10.2",

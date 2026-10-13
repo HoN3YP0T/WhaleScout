@@ -190,6 +190,9 @@ const VARIANTS: Variant[] = [
       c.position.trailingTrailPct = 10;
     }),
   },
+  // On the curve, a buy's average price impact is ~ size / virtual SOL
+  // reserves, which the paper model underestimates ~2-3x for larger entries.
+  { name: "edge+slippage-x3", venues: "curve", apply: on(edge, (c) => (c.execution.slippageSizeImpactK *= 3)) },
   { name: "edge+min-buy-$1000", venues: "curve", apply: on(edge, (c) => (c.walletGate.minWhaleBuySizeUsd = 1000)) },
   { name: "edge+liq>=$8k", venues: "curve", apply: on(edge, (c) => (c.tokenThresholds.minLiquidityUsd = 8000)) },
   { name: "open-gate", venues: "curve", apply: on(coord2, openGate) },
@@ -243,6 +246,10 @@ interface VariantResult {
   medianHoldMin?: number;
   promoted: number;
   signals: number;
+  /** Mean PnL per trade and its 95% confidence interval (normal approx). */
+  meanPerTradeUsd: number;
+  ci95Usd: [number, number];
+  grossBeforeFeesUsd: number;
   positions: Position[];
 }
 
@@ -301,6 +308,10 @@ async function runVariant(v: Variant, base: StrategyConfig, eventsFor: (venues: 
   const unrealizedUsd = open.reduce((s, p) => s + p.unrealizedPnlUsd, 0);
   const investedUsd = positions.reduce((s, p) => s + p.entryUsdValue, 0);
   const promoted = (await replay.repos.watchlist.listByStatus("active")).length;
+  const perTrade = positions.map(pnlOf);
+  const mean = perTrade.length ? perTrade.reduce((a, b) => a + b, 0) / perTrade.length : 0;
+  const sd = perTrade.length > 1 ? Math.sqrt(perTrade.reduce((a, b) => a + (b - mean) ** 2, 0) / (perTrade.length - 1)) : 0;
+  const half = perTrade.length > 1 ? (1.96 * sd) / Math.sqrt(perTrade.length) : 0;
   const rejected = (await replay.repos.watchlist.listByStatus("rejected")).length;
   if (process.env.BT_DEBUG) console.log(`  [debug ${v.name}] events ${events.length}, promoted ${promoted}, cluster-rejected ${rejected}`);
   return {
@@ -323,6 +334,9 @@ async function runVariant(v: Variant, base: StrategyConfig, eventsFor: (venues: 
     medianHoldMin: holds.length ? holds[Math.floor(holds.length / 2)] : undefined,
     promoted,
     signals: replay.signals.length,
+    meanPerTradeUsd: mean,
+    ci95Usd: [mean - half, mean + half],
+    grossBeforeFeesUsd: realizedUsd + unrealizedUsd + positions.reduce((s, p) => s + p.feesUsd, 0),
     positions,
   };
 }
@@ -362,12 +376,13 @@ async function main(): Promise<void> {
     console.log(
       `${r.name.padEnd(18)} opened ${String(r.opened).padStart(3)} (open ${r.stillOpen})  win ${(r.winRate * 100).toFixed(0).padStart(3)}%  ` +
         `total ${usd(r.totalUsd).padStart(10)} on ${usd(r.investedUsd)} (${r.returnOnCapitalPct.toFixed(1)}%)  PF ${Number.isFinite(r.profitFactor) ? r.profitFactor.toFixed(2) : "inf"}  ` +
-        `fees ${usd(r.feesUsd)}  halves ${usd(r.firstHalfUsd)} / ${usd(r.secondHalfUsd)}  exits ${JSON.stringify(r.exitReasons)}  ` +
+        `fees ${usd(r.feesUsd)} (gross ${usd(r.grossBeforeFeesUsd)})  per-trade ${usd(r.meanPerTradeUsd)} [95% CI ${usd(r.ci95Usd[0])}..${usd(r.ci95Usd[1])}]  ` +
+        `halves ${usd(r.firstHalfUsd)} / ${usd(r.secondHalfUsd)}  exits ${JSON.stringify(r.exitReasons)}  ` +
         `whales ${r.promoted}  [${((Date.now() - t0) / 1000).toFixed(0)}s]`,
     );
   }
 
-  const baseline = results.find((r) => r.name === "coord2") ?? results.find((r) => r.name === "baseline");
+  const baseline = results.find((r) => r.name === "edge") ?? results.find((r) => r.name === "baseline");
   if (baseline) {
     console.log(`\n${baseline.name} trades:`);
     for (const p of baseline.positions.sort((a, b) => a.openedAt - b.openedAt)) {

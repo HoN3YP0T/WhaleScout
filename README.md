@@ -366,6 +366,29 @@ wallets, signals and top rejection reasons, paper positions and exits. It
 enables auto-discovery and relaxes the wallet/entry gates so every stage
 fires within minutes, so it tests the plumbing, not the strategy.
 
+## Real-data backtest
+
+`npm run backtest` replays the fabricated mock scenarios - its PnL means
+nothing. For real data:
+
+```bash
+npx tsx scripts/record-feed.ts --minutes 90                 # record the live pump.fun feed
+npx tsx scripts/backtest-pumpfun.ts --recording latest       # replay it through the live pipeline
+npx tsx scripts/backtest-pumpfun.ts                          # or replay discover-whales' cached histories
+```
+
+The replay runs the unmodified pipeline with paper execution, no
+pre-selected whales (discovery promotes wallets from their own replayed
+history), curve liquidity derived from price, and the 1.25% per-trade fee
+measured on live pump.fun events. It prints one row per strategy variant:
+trades, win rate, PnL split into realized and still-open, fees vs gross,
+a 95% confidence interval per trade, and the two chronological halves.
+
+Known optimism: entries fill at the triggering whale's own price. Live,
+the bot acts ~1.5-2s later; on the 2026-10-13 recording the price 1-2s
+after a whale buy was already a median ~6% higher (worse in 46 of 47
+trades), which turned the best variant's +$197 into -$1,306.
+
 ## Creator reputation
 
 Two existing gaps turned out to correlate rather than needing two separate
